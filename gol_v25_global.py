@@ -4,19 +4,19 @@ import threading
 from datetime import datetime, timedelta, timezone
 from difflib import get_close_matches
 
-# 🔐 SEUS DADOS
+# 🔐 DADOS
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
 
 HEADERS = {"x-apisports-key": API_KEY}
 
-# 🌍 FORMATAR LIGA
+# 🌍 LIGAS
 def nome_liga(liga):
     liga = liga.lower()
 
     if "brazil" in liga:
-        return "🇧🇷 Campeonato Brasileiro Série A"
+        return "🇧🇷 Campeonato Brasileiro – Série A"
     elif "england" in liga:
         return "🏴 Premier League"
     elif "spain" in liga:
@@ -47,14 +47,13 @@ def buscar_time(nome):
         if res["response"]:
             return res["response"][0]["team"]["id"]
 
-        nomes = ["flamengo", "palmeiras", "corinthians", "vasco", "gremio"]
+        nomes = ["flamengo","palmeiras","corinthians","vasco","gremio"]
         match = get_close_matches(nome.lower(), nomes, n=1, cutoff=0.6)
 
         if match:
             return buscar_time(match[0])
 
         return None
-
     except:
         return None
 
@@ -67,37 +66,14 @@ def pegar_jogos(team_id):
     except:
         return []
 
-# 🔍 BUSCAR PARTIDA
-def buscar_jogo(home, away):
-    try:
-        for i in range(3):
-            data = (datetime.now(timezone.utc) + timedelta(days=i)).strftime("%Y-%m-%d")
-            url = f"https://v3.football.api-sports.io/fixtures?date={data}"
-            res = requests.get(url, headers=HEADERS, timeout=10).json()
-
-            for j in res.get("response", []):
-                h = j["teams"]["home"]["name"].lower()
-                a = j["teams"]["away"]["name"].lower()
-
-                if home.lower() in h and away.lower() in a:
-                    liga = j["league"]["name"]
-                    dt = datetime.fromisoformat(j["fixture"]["date"].replace("Z","+00:00"))
-                    dt -= timedelta(hours=4)
-
-                    return liga, dt.strftime("%H:%M"), dt.strftime("%d/%m")
-
-        return None, None, None
-    except:
-        return None, None, None
-
-# 🧠 ANÁLISE
+# 🧠 CALCULAR MERCADOS + EV
 def analisar(home, away):
     try:
         home_id = buscar_time(home)
         away_id = buscar_time(away)
 
         if not home_id or not away_id:
-            return "Over 1.5", 55, 5
+            return "Over 1.5", 55, 5, 0.05
 
         jogos = pegar_jogos(home_id) + pegar_jogos(away_id)
 
@@ -118,57 +94,98 @@ def analisar(home, away):
                 continue
 
         if not gols:
-            return "Over 1.5", 55, 5
+            return "Over 1.5", 55, 5, 0.05
 
         total = len(gols)
 
         over15 = sum(1 for g in gols if g >= 2) / total
         over25 = sum(1 for g in gols if g >= 3) / total
+        over35 = sum(1 for g in gols if g >= 4) / total
+        under25 = sum(1 for g in gols if g <= 2) / total
+        under35 = sum(1 for g in gols if g <= 3) / total
         btts_rate = btts / total
 
-        if over15 >= 0.75:
-            return "Over 1.5", int(over15*100), 8
-        elif over25 >= 0.65:
-            return "Over 2.5", int(over25*100), 8
-        elif btts_rate >= 0.65:
-            return "Ambas marcam", int(btts_rate*100), 7
-        else:
-            return "Over 1.5", int(over15*100), 6
+        # odds simuladas (padrão mercado)
+        odds = {
+            "Over 1.5": 1.30,
+            "Over 2.5": 1.80,
+            "Over 3.5": 2.50,
+            "Under 2.5": 1.80,
+            "Under 3.5": 1.40,
+            "Ambas marcam": 1.90
+        }
+
+        mercados = {
+            "Over 1.5": over15,
+            "Over 2.5": over25,
+            "Over 3.5": over35,
+            "Under 2.5": under25,
+            "Under 3.5": under35,
+            "Ambas marcam": btts_rate
+        }
+
+        melhor = None
+        melhor_ev = -999
+
+        for m, prob in mercados.items():
+            ev = (prob * odds[m]) - 1
+
+            if ev > melhor_ev:
+                melhor_ev = ev
+                melhor = m
+                melhor_prob = prob
+
+        forca = 9 if melhor_prob >= 0.70 else 8 if melhor_prob >= 0.65 else 7 if melhor_prob >= 0.60 else 6
+
+        return melhor, int(melhor_prob*100), forca, round(melhor_ev, 2)
 
     except:
-        return "Over 1.5", 50, 5
+        return "Over 1.5", 50, 5, 0.05
+
+# 🧠 OBSERVAÇÃO
+def gerar_observacao(entrada, prob, forca):
+    if "Over 3.5" in entrada:
+        return "🧠 Jogo extremamente aberto"
+    elif "Over" in entrada:
+        return "🧠 Tendência de gols"
+    elif "Under" in entrada:
+        return "🧠 Jogo mais fechado"
+    elif "Ambas" in entrada:
+        return "🧠 Alta chance de ambos marcarem"
+    else:
+        return "🧠 Jogo equilibrado"
 
 # 📲 TELEGRAM
 def enviar(msg):
     try:
-        requests.post(
-            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": msg},
-            timeout=10
-        )
+        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+                      data={"chat_id": CHAT_ID, "text": msg}, timeout=10)
     except:
         pass
 
-def ler(offset=None):
-    try:
-        url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
-        res = requests.get(url, params={"timeout":30,"offset":offset}, timeout=35).json()
-        return res.get("result", [])
-    except:
-        return []
-
-# 🤖 AUTO
+# 🤖 AUTOMÁTICO
 def modo_automatico():
     while True:
         try:
             enviados = 0
-            limite = 20
+            limite = 5
 
             data = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             url = f"https://v3.football.api-sports.io/fixtures?date={data}"
-            res = requests.get(url, headers=HEADERS, timeout=10).json()
+            res = requests.get(url, headers=HEADERS).json()
+
+            agora = datetime.now(timezone.utc)
 
             for j in res.get("response", [])[:50]:
+
+                try:
+                    dt = datetime.fromisoformat(j["fixture"]["date"].replace("Z","+00:00"))
+
+                    if dt < agora or dt > agora + timedelta(hours=6):
+                        continue
+                except:
+                    continue
+
                 if enviados >= limite:
                     break
 
@@ -176,28 +193,36 @@ def modo_automatico():
                 away = j["teams"]["away"]["name"]
                 liga = j["league"]["name"]
 
-                entrada, prob, forca = analisar(home, away)
+                entrada, prob, forca, ev = analisar(home, away)
 
-                if forca >= 6 and prob >= 65:
+                if forca >= 7 and prob >= 65:
+                    obs = gerar_observacao(entrada, prob, forca)
+
                     msg = f"""🔥 GOUVEA BET AUTO
 
 {home} x {away}
 
 🏆 {nome_liga(liga)}
 
-🎯 {entrada}
+🎯 Melhor entrada: {entrada}
 📊 Prob: {prob}%
-⭐ Força: {forca}/10"""
+💰 EV: {ev}
+⭐ Força: {forca}/10
+
+✅ ENTRAR
+
+{obs}"""
 
                     enviar(msg)
                     enviados += 1
+                    time.sleep(10)
 
             time.sleep(3600)
 
         except:
             time.sleep(60)
 
-# 🚀 BOT
+# 🚀 MANUAL
 def main():
     enviar("🔥 GOUVEA BET ONLINE")
 
@@ -205,12 +230,12 @@ def main():
 
     while True:
         try:
-            updates = ler(last)
+            url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
+            res = requests.get(url, params={"timeout":30,"offset":last}).json()
 
-            for u in updates:
+            for u in res.get("result", []):
                 last = u["update_id"] + 1
 
-                # 🔒 proteção total
                 if "message" not in u or "text" not in u["message"]:
                     continue
 
@@ -220,30 +245,27 @@ def main():
                     enviar("Formato: Time A x Time B")
                     continue
 
-                partes = texto.split(" x ")
+                home, away = texto.split(" x ")
 
-                if len(partes) != 2:
-                    enviar("Formato correto: Time A x Time B")
-                    continue
+                entrada, prob, forca, ev = analisar(home, away)
+                obs = gerar_observacao(entrada, prob, forca)
 
-                home, away = partes
+                status = "✅ ENTRAR" if forca >= 8 else "⚠️ MÉDIO" if forca >=6 else "⚠️ OBSERVAR"
 
-                liga, hora, dia = buscar_jogo(home.strip(), away.strip())
-                entrada, prob, forca = analisar(home.strip(), away.strip())
-
-                resposta = f"""GOUVEA BET
+                msg = f"""GOUVEA BET
 
 {home} x {away}
 
-🏆 {nome_liga(liga) if liga else "🌍"}
-📅 {dia if dia else "--"}
-⏰ {hora if hora else "--"}
-
-🎯 {entrada}
+🎯 Melhor entrada: {entrada}
 📊 Prob: {prob}%
-⭐ Força: {forca}/10"""
+💰 EV: {ev}
+⭐ Força: {forca}/10
 
-                enviar(resposta)
+{status}
+
+{obs}"""
+
+                enviar(msg)
 
         except:
             pass
@@ -251,6 +273,6 @@ def main():
         time.sleep(2)
 
 # 🚀 START
-if __name__ == "__main__":
+if _name_ == "_main_":
     threading.Thread(target=modo_automatico).start()
     main()
