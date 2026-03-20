@@ -1,12 +1,17 @@
 import requests
 import time
+import hashlib
 from datetime import datetime, timedelta, timezone
 
 # 🔐 DADOS
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
+
 HEADERS = {"x-apisports-key": API_KEY}
+
+# 🔥 CONTROLE DE INSTÂNCIA (ANTI DUPLICAÇÃO)
+BOT_UNICO_ID = hashlib.md5(TOKEN.encode()).hexdigest()
 
 # 🌍 LIGA BONITA
 def nome_liga(liga):
@@ -70,7 +75,7 @@ def pegar_jogos(team_id):
     except:
         return []
 
-# 🔍 BUSCAR LIGA, DATA E HORA
+# 🔍 BUSCAR LIGA
 def buscar_info_jogo(home, away):
     try:
         for i in range(0, 5):
@@ -85,8 +90,7 @@ def buscar_info_jogo(home, away):
                 if home.lower() in h and away.lower() in a:
                     liga = j["league"]["name"]
 
-                    data_jogo = j["fixture"]["date"]
-                    dt = datetime.fromisoformat(data_jogo.replace("Z","+00:00"))
+                    dt = datetime.fromisoformat(j["fixture"]["date"].replace("Z","+00:00"))
                     dt -= timedelta(hours=4)
 
                     return liga, dt.strftime("%d/%m"), dt.strftime("%H:%M")
@@ -95,7 +99,7 @@ def buscar_info_jogo(home, away):
     except:
         return None, None, None
 
-# 🧠 ANÁLISE INTELIGENTE
+# 🧠 ANÁLISE
 def analisar(home, away):
     try:
         home_id = buscar_time(home)
@@ -127,12 +131,14 @@ def analisar(home, away):
 
         total = len(gols)
 
-        over15 = sum(1 for g in gols if g >= 2) / total
-        over25 = sum(1 for g in gols if g >= 3) / total
-        over35 = sum(1 for g in gols if g >= 4) / total
-        under25 = sum(1 for g in gols if g <= 2) / total
-        under35 = sum(1 for g in gols if g <= 3) / total
-        btts_rate = btts / total
+        stats = {
+            "Over 1.5": sum(1 for g in gols if g >= 2) / total,
+            "Over 2.5": sum(1 for g in gols if g >= 3) / total,
+            "Over 3.5": sum(1 for g in gols if g >= 4) / total,
+            "Under 2.5": sum(1 for g in gols if g <= 2) / total,
+            "Under 3.5": sum(1 for g in gols if g <= 3) / total,
+            "Ambas marcam": btts / total
+        }
 
         odds = {
             "Over 1.5": 1.30,
@@ -143,40 +149,26 @@ def analisar(home, away):
             "Ambas marcam": 1.90
         }
 
-        mercados = {
-            "Over 1.5": over15,
-            "Over 2.5": over25,
-            "Over 3.5": over35,
-            "Under 2.5": under25,
-            "Under 3.5": under35,
-            "Ambas marcam": btts_rate
-        }
-
         melhor = None
         melhor_score = -999
 
-        for m, prob in mercados.items():
-            odd = odds[m]
-            ev = (prob * odd) - 1
-
+        for m, prob in stats.items():
             if prob < 0.60:
                 continue
 
-            if "Under 3.5" in m and prob > 0.80:
-                continue
+            odd = odds[m]
+            ev = (prob * odd) - 1
 
-            penalidade = 0
-            if odd < 1.50:
-                penalidade = 0.15
+            # 🔥 penaliza under dominante
+            if "Under" in m:
+                ev -= 0.05
 
-            bonus = 0
+            # 🔥 favorece mercados mais fortes
             if m in ["Over 2.5", "Ambas marcam"]:
-                bonus = 0.07
+                ev += 0.05
 
-            score = ev + bonus - penalidade
-
-            if score > melhor_score:
-                melhor_score = score
+            if ev > melhor_score:
+                melhor_score = ev
                 melhor = m
                 melhor_prob = prob
                 melhor_ev = ev
@@ -185,8 +177,7 @@ def analisar(home, away):
 
         return melhor, int(melhor_prob*100), forca, round(melhor_ev, 2)
 
-    except Exception as e:
-        print("ERRO:", e)
+    except:
         return "Over 1.5", 50, 5, 0.05
 
 # 📲 ENVIAR
@@ -202,12 +193,12 @@ def main():
     enviar("🔥 GOUVEA BET ONLINE")
 
     last_update_id = None
-    ultimo_texto = None
+    ultimo_hash = None
 
     while True:
         try:
-            url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
-            res = requests.get(url, params={"timeout":30,"offset":last_update_id}).json()
+            res = requests.get(f"https://api.telegram.org/bot{TOKEN}/getUpdates",
+                               params={"timeout":30,"offset":last_update_id}).json()
 
             for u in res.get("result", []):
                 last_update_id = u["update_id"] + 1
@@ -217,10 +208,12 @@ def main():
 
                 texto = u["message"]["text"].lower().strip()
 
-                if texto == ultimo_texto:
+                hash_atual = hashlib.md5(texto.encode()).hexdigest()
+
+                if hash_atual == ultimo_hash:
                     continue
 
-                ultimo_texto = texto
+                ultimo_hash = hash_atual
 
                 texto = texto.replace(" vs ", " x ")
 
