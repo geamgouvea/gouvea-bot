@@ -2,16 +2,17 @@ import requests
 import time
 from datetime import datetime, timedelta, timezone
 
+# 🔐 DADOS
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
-API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5
+API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
 
 HEADERS = {"x-apisports-key": API_KEY}
 
 ultimo_envio = {}
 ultimo_auto = 0
 
-# 🌍 LIGA
+# 🌍 LIGA INTELIGENTE
 def nome_liga(liga, pais=""):
     liga = liga.lower()
     pais = pais.lower()
@@ -27,16 +28,16 @@ def nome_liga(liga, pais=""):
         return "🇩🇪 Campeonato Alemão – Bundesliga"
 
     if "england" in pais:
-        return "🏴 Premier League"
+        return "🏴 Campeonato Inglês – Premier League"
 
     if "spain" in pais:
-        return "🇪🇸 La Liga"
+        return "🇪🇸 Campeonato Espanhol – La Liga"
 
     if "italy" in pais:
-        return "🇮🇹 Serie A"
+        return "🇮🇹 Campeonato Italiano – Serie A"
 
     if "france" in pais:
-        return "🇫🇷 Ligue 1"
+        return "🇫🇷 Campeonato Francês – Ligue 1"
 
     return f"🌍 {liga.title()}"
 
@@ -60,7 +61,7 @@ def pegar_jogos(team_id):
     except:
         return []
 
-# 🧠 ANÁLISE
+# 🧠 ANÁLISE COMPLETA
 def analisar(home, away):
     home_id = buscar_time(home)
     away_id = buscar_time(away)
@@ -90,12 +91,14 @@ def analisar(home, away):
     total = len(gols)
 
     stats = {
+        "Over 1.5": sum(1 for g in gols if g >= 2) / total,
         "Over 2.5": sum(1 for g in gols if g >= 3) / total,
         "Under 3.5": sum(1 for g in gols if g <= 3) / total,
         "Ambas marcam": btts / total
     }
 
     odds = {
+        "Over 1.5": 1.30,
         "Over 2.5": 1.80,
         "Under 3.5": 1.40,
         "Ambas marcam": 1.90
@@ -105,7 +108,14 @@ def analisar(home, away):
     melhor_score = -999
 
     for m, prob in stats.items():
+
         if prob < 0.60:
+            continue
+
+        if m == "Over 1.5" and prob < 0.70:
+            continue
+
+        if m == "Under 3.5" and prob > 0.85:
             continue
 
         ev = (prob * odds[m]) - 1
@@ -142,7 +152,7 @@ def gerar_multiplas(jogos):
 
     return msgs
 
-# ⚽ BUSCAR JOGOS (PRÉ-JOGO)
+# ⚽ BUSCAR JOGOS (PRÉ-JOGO + HORÁRIO)
 def buscar_jogos():
     jogos = []
     hoje = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -153,23 +163,25 @@ def buscar_jogos():
     ligas_boas = ["brazil","england","spain","germany","italy","france"]
 
     agora = datetime.now(timezone.utc)
+    hora_local = (agora - timedelta(hours=4)).hour
+
+    # 🛑 BLOQUEIO MADRUGADA
+    if hora_local < 8 or hora_local > 23:
+        return []
 
     for j in res.get("response", [])[:30]:
 
         status = j["fixture"]["status"]["short"]
-
-        # 🛑 só pré-jogo
         if status != "NS":
             continue
 
         pais = j["league"]["country"].lower()
-
         if pais not in ligas_boas:
             continue
 
         dt = datetime.fromisoformat(j["fixture"]["date"].replace("Z","+00:00"))
 
-        # ⏰ até 3 horas antes
+        # ⏰ até 3h antes
         if (dt - agora).total_seconds() > 10800:
             continue
 
