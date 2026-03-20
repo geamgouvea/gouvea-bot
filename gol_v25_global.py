@@ -4,21 +4,18 @@ import threading
 from datetime import datetime, timedelta, timezone
 from difflib import get_close_matches
 
-# 🔐 SEUS DADOS (COLOCA OS SEUS AQUI)
-TTOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
+# 🔐 SEUS DADOS
+TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
 
-
 HEADERS = {"x-apisports-key": API_KEY}
 
-# 🌍 LIGAS FORMATADAS
+# 🌍 FORMATAR LIGA
 def nome_liga(liga):
     liga = liga.lower()
 
     if "brazil" in liga:
-        if "serie b" in liga:
-            return "🇧🇷 Campeonato Brasileiro Série B"
         return "🇧🇷 Campeonato Brasileiro Série A"
     elif "england" in liga:
         return "🏴 Premier League"
@@ -30,20 +27,18 @@ def nome_liga(liga):
         return "🇩🇪 Bundesliga"
     elif "france" in liga:
         return "🇫🇷 Ligue 1"
-    elif "china" in liga:
-        return "🇨🇳 Chinese Super League"
     elif "japan" in liga:
         return "🇯🇵 J-League"
+    elif "china" in liga:
+        return "🇨🇳 Chinese Super League"
     elif "korea" in liga:
         return "🇰🇷 K League"
     elif "saudi" in liga:
-        return "🇸🇦 Saudi Pro League"
-    elif "australia" in liga:
-        return "🇦🇺 A-League"
+        return "🇸🇦 Saudi League"
     else:
         return f"🌍 {liga}"
 
-# 🔍 BUSCAR TIME INTELIGENTE
+# 🔍 BUSCAR TIME
 def buscar_time(nome):
     try:
         url = "https://v3.football.api-sports.io/teams"
@@ -52,8 +47,7 @@ def buscar_time(nome):
         if res["response"]:
             return res["response"][0]["team"]["id"]
 
-        # fallback simples
-        nomes = ["flamengo", "palmeiras", "corinthians", "barcelona", "real madrid"]
+        nomes = ["flamengo", "palmeiras", "corinthians", "vasco", "gremio"]
         match = get_close_matches(nome.lower(), nomes, n=1, cutoff=0.6)
 
         if match:
@@ -61,24 +55,22 @@ def buscar_time(nome):
 
         return None
 
-    except Exception as e:
-        print("Erro buscar_time:", e)
+    except:
         return None
 
-# 📊 PEGAR JOGOS
+# 📊 JOGOS
 def pegar_jogos(team_id):
     try:
         url = f"https://v3.football.api-sports.io/fixtures?team={team_id}&last=10"
         res = requests.get(url, headers=HEADERS, timeout=10).json()
         return res.get("response", [])
-    except Exception as e:
-        print("Erro pegar_jogos:", e)
+    except:
         return []
 
 # 🔍 BUSCAR PARTIDA
 def buscar_jogo(home, away):
     try:
-        for i in range(0, 3):
+        for i in range(3):
             data = (datetime.now(timezone.utc) + timedelta(days=i)).strftime("%Y-%m-%d")
             url = f"https://v3.football.api-sports.io/fixtures?date={data}"
             res = requests.get(url, headers=HEADERS, timeout=10).json()
@@ -95,9 +87,7 @@ def buscar_jogo(home, away):
                     return liga, dt.strftime("%H:%M"), dt.strftime("%d/%m")
 
         return None, None, None
-
-    except Exception as e:
-        print("Erro buscar_jogo:", e)
+    except:
         return None, None, None
 
 # 🧠 ANÁLISE
@@ -107,7 +97,7 @@ def analisar(home, away):
         away_id = buscar_time(away)
 
         if not home_id or not away_id:
-            return "Over 1.5", 55, 0.05, 5
+            return "Over 1.5", 55, 5
 
         jogos = pegar_jogos(home_id) + pegar_jogos(away_id)
 
@@ -128,26 +118,25 @@ def analisar(home, away):
                 continue
 
         if not gols:
-            return "Over 1.5", 55, 0.05, 5
+            return "Over 1.5", 55, 5
 
-        total_jogos = len(gols)
+        total = len(gols)
 
-        over15 = sum(1 for g in gols if g >= 2) / total_jogos
-        over25 = sum(1 for g in gols if g >= 3) / total_jogos
-        btts_rate = btts / total_jogos
+        over15 = sum(1 for g in gols if g >= 2) / total
+        over25 = sum(1 for g in gols if g >= 3) / total
+        btts_rate = btts / total
 
-        if over15 >= 0.80:
-            return "Over 1.5", int(over15*100), 0.25, 8
+        if over15 >= 0.75:
+            return "Over 1.5", int(over15*100), 8
         elif over25 >= 0.65:
-            return "Over 2.5", int(over25*100), 0.30, 8
+            return "Over 2.5", int(over25*100), 8
         elif btts_rate >= 0.65:
-            return "Ambas marcam", int(btts_rate*100), 0.25, 7
+            return "Ambas marcam", int(btts_rate*100), 7
         else:
-            return "Over 1.5", int(over15*100), 0.10, 6
+            return "Over 1.5", int(over15*100), 6
 
-    except Exception as e:
-        print("Erro analisar:", e)
-        return "Over 1.5", 50, 0.05, 5
+    except:
+        return "Over 1.5", 50, 5
 
 # 📲 TELEGRAM
 def enviar(msg):
@@ -157,19 +146,18 @@ def enviar(msg):
             data={"chat_id": CHAT_ID, "text": msg},
             timeout=10
         )
-    except Exception as e:
-        print("Erro Telegram:", e)
+    except:
+        pass
 
 def ler(offset=None):
     try:
         url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
         res = requests.get(url, params={"timeout":30,"offset":offset}, timeout=35).json()
         return res.get("result", [])
-    except Exception as e:
-        print("Erro ler:", e)
+    except:
         return []
 
-# 🔥 MODO AUTOMÁTICO
+# 🤖 AUTO
 def modo_automatico():
     while True:
         try:
@@ -187,25 +175,18 @@ def modo_automatico():
                 home = j["teams"]["home"]["name"]
                 away = j["teams"]["away"]["name"]
                 liga = j["league"]["name"]
-                hora = j["fixture"]["date"]
 
-                entrada, prob, ev, forca = analisar(home, away)
+                entrada, prob, forca = analisar(home, away)
 
                 if forca >= 6 and prob >= 65:
-                    dt = datetime.fromisoformat(hora.replace("Z","+00:00"))
-                    dt -= timedelta(hours=4)
-
                     msg = f"""🔥 GOUVEA BET AUTO
 
 {home} x {away}
 
 🏆 {nome_liga(liga)}
-📅 {dt.strftime("%d/%m")}
-⏰ {dt.strftime("%H:%M")}
 
-🎯 Entrada: {entrada}
+🎯 {entrada}
 📊 Prob: {prob}%
-💰 EV: {ev}
 ⭐ Força: {forca}/10"""
 
                     enviar(msg)
@@ -213,11 +194,10 @@ def modo_automatico():
 
             time.sleep(3600)
 
-        except Exception as e:
-            print("Erro automático:", e)
+        except:
             time.sleep(60)
 
-# 🚀 BOT PRINCIPAL
+# 🚀 BOT
 def main():
     enviar("🔥 GOUVEA BET ONLINE")
 
@@ -230,16 +210,26 @@ def main():
             for u in updates:
                 last = u["update_id"] + 1
 
+                # 🔒 proteção total
+                if "message" not in u or "text" not in u["message"]:
+                    continue
+
                 texto = u["message"]["text"].lower().replace(" vs ", " x ")
 
                 if "x" not in texto:
                     enviar("Formato: Time A x Time B")
                     continue
 
-                home, away = texto.split(" x ")
+                partes = texto.split(" x ")
+
+                if len(partes) != 2:
+                    enviar("Formato correto: Time A x Time B")
+                    continue
+
+                home, away = partes
 
                 liga, hora, dia = buscar_jogo(home.strip(), away.strip())
-                entrada, prob, ev, forca = analisar(home.strip(), away.strip())
+                entrada, prob, forca = analisar(home.strip(), away.strip())
 
                 resposta = f"""GOUVEA BET
 
@@ -255,16 +245,12 @@ def main():
 
                 enviar(resposta)
 
-        except Exception as e:
-            print("Erro main:", e)
+        except:
+            pass
 
         time.sleep(2)
 
-# 🚀 INICIAR
-if _name_ == "_main_":
-    try:
-        threading.Thread(target=modo_automatico).start()
-        main()
-    except Exception as e:
-        print("ERRO GERAL:", e)
-        time.sleep(10)
+# 🚀 START
+if __name__ == "__main__":
+    threading.Thread(target=modo_automatico).start()
+    main()
