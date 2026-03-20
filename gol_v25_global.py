@@ -1,13 +1,11 @@
 import requests
 import time
-import threading
 from datetime import datetime, timedelta, timezone
 
 # 🔐 DADOS
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
-
 HEADERS = {"x-apisports-key": API_KEY}
 
 # 🌍 LIGA BONITA
@@ -17,28 +15,30 @@ def nome_liga(liga):
 
     liga = liga.lower()
 
-    if "brazil" in liga:
+    if "brazil" in liga or "serie a" in liga:
         return "🇧🇷 Campeonato Brasileiro – Série A"
-    elif "england" in liga:
-        return "🏴 Premier League"
-    elif "spain" in liga:
-        return "🇪🇸 La Liga"
+    elif "serie b" in liga:
+        return "🇧🇷 Campeonato Brasileiro – Série B"
+    elif "england" in liga or "premier" in liga:
+        return "🏴 Campeonato Inglês – Premier League"
+    elif "spain" in liga or "la liga" in liga:
+        return "🇪🇸 Campeonato Espanhol – La Liga"
     elif "italy" in liga:
-        return "🇮🇹 Serie A"
+        return "🇮🇹 Campeonato Italiano – Serie A"
     elif "germany" in liga:
-        return "🇩🇪 Bundesliga"
+        return "🇩🇪 Campeonato Alemão – Bundesliga"
     elif "france" in liga:
-        return "🇫🇷 Ligue 1"
+        return "🇫🇷 Campeonato Francês – Ligue 1"
     elif "japan" in liga:
         return "🇯🇵 J-League"
     elif "china" in liga:
-        return "🇨🇳 Chinese Super League"
+        return "🇨🇳 Super League"
     elif "korea" in liga:
         return "🇰🇷 K League"
     elif "saudi" in liga:
         return "🇸🇦 Saudi League"
-    else:
-        return f"🌍 {liga}"
+
+    return f"🌍 {liga}"
 
 # 🔍 BUSCAR TIME
 def buscar_time(nome):
@@ -70,8 +70,8 @@ def pegar_jogos(team_id):
     except:
         return []
 
-# 🔍 BUSCAR LIGA
-def buscar_liga(home, away):
+# 🔍 BUSCAR LIGA, DATA E HORA
+def buscar_info_jogo(home, away):
     try:
         for i in range(0, 5):
             data = (datetime.now(timezone.utc) + timedelta(days=i)).strftime("%Y-%m-%d")
@@ -83,13 +83,19 @@ def buscar_liga(home, away):
                 a = j["teams"]["away"]["name"].lower()
 
                 if home.lower() in h and away.lower() in a:
-                    return j["league"]["name"]
+                    liga = j["league"]["name"]
 
-        return None
+                    data_jogo = j["fixture"]["date"]
+                    dt = datetime.fromisoformat(data_jogo.replace("Z","+00:00"))
+                    dt -= timedelta(hours=4)
+
+                    return liga, dt.strftime("%d/%m"), dt.strftime("%H:%M")
+
+        return None, None, None
     except:
-        return None
+        return None, None, None
 
-# 🧠 ANÁLISE COM EV BALANCEADO
+# 🧠 ANÁLISE INTELIGENTE
 def analisar(home, away):
     try:
         home_id = buscar_time(home)
@@ -156,15 +162,16 @@ def analisar(home, away):
             if prob < 0.60:
                 continue
 
+            if "Under 3.5" in m and prob > 0.80:
+                continue
+
             penalidade = 0
             if odd < 1.50:
-                penalidade = 0.10
+                penalidade = 0.15
 
             bonus = 0
             if m in ["Over 2.5", "Ambas marcam"]:
-                bonus = 0.05
-            if m == "Over 3.5":
-                bonus = 0.03
+                bonus = 0.07
 
             score = ev + bonus - penalidade
 
@@ -182,18 +189,6 @@ def analisar(home, away):
         print("ERRO:", e)
         return "Over 1.5", 50, 5, 0.05
 
-# 🧠 OBSERVAÇÃO
-def gerar_observacao(entrada):
-    if "Over 3.5" in entrada:
-        return "🧠 Jogo muito aberto"
-    elif "Over" in entrada:
-        return "🧠 Tendência de gols"
-    elif "Under" in entrada:
-        return "🧠 Jogo mais fechado"
-    elif "Ambas" in entrada:
-        return "🧠 Alta chance de ambos marcarem"
-    return ""
-
 # 📲 ENVIAR
 def enviar(msg):
     try:
@@ -202,12 +197,12 @@ def enviar(msg):
     except:
         pass
 
-# 🤖 MODO MANUAL SEM REPETIÇÃO
+# 🤖 BOT
 def main():
     enviar("🔥 GOUVEA BET ONLINE")
 
     last_update_id = None
-    processados = set()
+    ultimo_texto = None
 
     while True:
         try:
@@ -215,18 +210,19 @@ def main():
             res = requests.get(url, params={"timeout":30,"offset":last_update_id}).json()
 
             for u in res.get("result", []):
-                update_id = u["update_id"]
-
-                if update_id in processados:
-                    continue
-
-                processados.add(update_id)
-                last_update_id = update_id + 1
+                last_update_id = u["update_id"] + 1
 
                 if "message" not in u or "text" not in u["message"]:
                     continue
 
-                texto = u["message"]["text"].lower().replace(" vs ", " x ")
+                texto = u["message"]["text"].lower().strip()
+
+                if texto == ultimo_texto:
+                    continue
+
+                ultimo_texto = texto
+
+                texto = texto.replace(" vs ", " x ")
 
                 if "x" not in texto:
                     enviar("Formato: Time A x Time B")
@@ -234,26 +230,27 @@ def main():
 
                 home, away = texto.split(" x ")
 
-                liga = buscar_liga(home.strip(), away.strip())
+                liga, data_jogo, hora_jogo = buscar_info_jogo(home.strip(), away.strip())
                 entrada, prob, forca, ev = analisar(home.strip(), away.strip())
-
-                obs = gerar_observacao(entrada)
-                status = "✅ ENTRAR" if forca >= 8 else "⚠️ MÉDIO"
 
                 msg = f"""GOUVEA BET
 
-{home} x {away}
+{home.title()} x {away.title()}
 
 🏆 {nome_liga(liga)}
+📅 {data_jogo if data_jogo else "--/--"}
+⏰ {hora_jogo if hora_jogo else "--:--"}
 
 🎯 Melhor entrada: {entrada}
+
 📊 Prob: {prob}%
 💰 EV: {ev}
+
 ⭐ Força: {forca}/10
 
-{status}
+{"✅ ENTRAR" if forca >= 8 else "⚠️ MÉDIO"}
 
-{obs}"""
+🧠 Análise baseada em dados reais"""
 
                 enviar(msg)
 
