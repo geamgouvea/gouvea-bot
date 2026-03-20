@@ -2,7 +2,6 @@ import requests
 import time
 from datetime import datetime, timedelta, timezone
 
-# 🔐 DADOS
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
@@ -11,8 +10,38 @@ HEADERS = {"x-apisports-key": API_KEY}
 
 ultimo_envio = {}
 ultimo_auto = 0
+last_update_id = None
 
-# 🌍 LIGA INTELIGENTE
+# 🧠 APELIDOS / CORREÇÃO
+apelidos = {
+    "borussia": "Borussia Dortmund",
+    "borússia": "Borussia Dortmund",
+    "bayern": "Bayern Munich",
+    "inter": "Inter Milan",
+    "man city": "Manchester City",
+    "manchester city": "Manchester City",
+    "man united": "Manchester United",
+    "psg": "Paris Saint Germain",
+    "real": "Real Madrid",
+    "barça": "Barcelona",
+    "barcelona": "Barcelona",
+    "juve": "Juventus",
+    "milan": "AC Milan",
+    "napoli": "Napoli",
+    "flamengo": "Flamengo",
+    "palmeiras": "Palmeiras"
+}
+
+def corrigir_nome(nome):
+    nome = nome.lower().strip()
+
+    for apelido, oficial in apelidos.items():
+        if apelido in nome:
+            return oficial
+
+    return nome.title()
+
+# 🌍 LIGA TOP
 def nome_liga(liga, pais=""):
     liga = liga.lower()
     pais = pais.lower()
@@ -22,33 +51,45 @@ def nome_liga(liga, pais=""):
             return "🇧🇷 Campeonato Brasileiro – Série A"
         elif "serie b" in liga:
             return "🇧🇷 Campeonato Brasileiro – Série B"
-        return "🇧🇷 Liga do Brasil"
-
-    if "germany" in pais or "bundesliga" in liga:
-        return "🇩🇪 Campeonato Alemão – Bundesliga"
 
     if "england" in pais:
-        return "🏴 Campeonato Inglês – Premier League"
+        return "🏴 Premier League"
 
     if "spain" in pais:
-        return "🇪🇸 Campeonato Espanhol – La Liga"
+        return "🇪🇸 La Liga"
+
+    if "germany" in pais:
+        return "🇩🇪 Bundesliga"
 
     if "italy" in pais:
-        return "🇮🇹 Campeonato Italiano – Serie A"
+        return "🇮🇹 Serie A"
 
     if "france" in pais:
-        return "🇫🇷 Campeonato Francês – Ligue 1"
+        return "🇫🇷 Ligue 1"
 
-    return f"🌍 {liga.title()}"
+    return None
 
 # 🔍 TIME
 def buscar_time(nome):
     try:
+        nome = corrigir_nome(nome)
+
         url = "https://v3.football.api-sports.io/teams"
         res = requests.get(url, headers=HEADERS, params={"search": nome})
         data = res.json()
+
         if data["response"]:
             return data["response"][0]["team"]["id"]
+
+        nome = nome.replace("ã","a").replace("ç","c")
+
+        res = requests.get(url, headers=HEADERS, params={"search": nome})
+        data = res.json()
+
+        if data["response"]:
+            return data["response"][0]["team"]["id"]
+
+        return None
     except:
         return None
 
@@ -61,13 +102,13 @@ def pegar_jogos(team_id):
     except:
         return []
 
-# 🧠 ANÁLISE COMPLETA
+# 🧠 ANÁLISE
 def analisar(home, away):
     home_id = buscar_time(home)
     away_id = buscar_time(away)
 
     if not home_id or not away_id:
-        return "Over 1.5", 55, 5, 0.05
+        return None
 
     jogos = pegar_jogos(home_id) + pegar_jogos(away_id)
 
@@ -85,51 +126,42 @@ def analisar(home, away):
         except:
             continue
 
-    if not gols:
-        return "Over 1.5", 55, 5, 0.05
+    if len(gols) < 8:
+        return None
 
     total = len(gols)
 
     stats = {
         "Over 1.5": sum(1 for g in gols if g >= 2) / total,
         "Over 2.5": sum(1 for g in gols if g >= 3) / total,
-        "Under 3.5": sum(1 for g in gols if g <= 3) / total,
-        "Ambas marcam": btts / total
+        "Ambas marcam": btts / total,
+        "Under 3.5": sum(1 for g in gols if g <= 3) / total
     }
 
     odds = {
         "Over 1.5": 1.30,
         "Over 2.5": 1.80,
-        "Under 3.5": 1.40,
-        "Ambas marcam": 1.90
+        "Ambas marcam": 1.90,
+        "Under 3.5": 1.40
     }
 
     melhor = None
     melhor_score = -999
 
     for m, prob in stats.items():
-
-        if prob < 0.60:
-            continue
-
-        if m == "Over 1.5" and prob < 0.70:
-            continue
-
-        if m == "Under 3.5" and prob > 0.85:
-            continue
-
         ev = (prob * odds[m]) - 1
+        score = ev + prob
 
-        if "Under" in m:
-            ev -= 0.05
-
-        if ev > melhor_score:
-            melhor_score = ev
+        if score > melhor_score:
+            melhor_score = score
             melhor = m
             melhor_prob = prob
             melhor_ev = ev
 
-    forca = 9 if melhor_prob >= 0.70 else 8 if melhor_prob >= 0.65 else 7
+    if not melhor:
+        return None
+
+    forca = 9 if melhor_prob >= 0.75 else 8 if melhor_prob >= 0.65 else 7
 
     return melhor, int(melhor_prob*100), forca, round(melhor_ev, 2)
 
@@ -138,21 +170,7 @@ def enviar(msg):
     requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage",
                   data={"chat_id": CHAT_ID, "text": msg})
 
-# 🔥 MULTIPLAS
-def gerar_multiplas(jogos):
-    msgs = []
-
-    if len(jogos) >= 3:
-        texto = "\n".join([f"{j['home']} x {j['away']} → {j['entrada']}" for j in jogos[:3]])
-        msgs.append(f"GOUVEA BET\n\n🔥 MÚLTIPLA DO DIA (3 jogos)\n\n{texto}\n\n⭐ Confiança: Alta")
-
-    if len(jogos) >= 4:
-        texto = "\n".join([f"{j['home']} x {j['away']} → {j['entrada']}" for j in jogos[:4]])
-        msgs.append(f"GOUVEA BET\n\n💣 MÚLTIPLA DO DIA (4 jogos)\n\n{texto}\n\n⭐ Confiança: Moderada")
-
-    return msgs
-
-# ⚽ BUSCAR JOGOS (PRÉ-JOGO + HORÁRIO)
+# ⚽ AUTO
 def buscar_jogos():
     jogos = []
     hoje = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -160,69 +178,67 @@ def buscar_jogos():
     url = f"https://v3.football.api-sports.io/fixtures?date={hoje}"
     res = requests.get(url, headers=HEADERS).json()
 
-    ligas_boas = ["brazil","england","spain","germany","italy","france"]
-
     agora = datetime.now(timezone.utc)
     hora_local = (agora - timedelta(hours=4)).hour
 
-    # 🛑 BLOQUEIO MADRUGADA
-    if hora_local < 8 or hora_local > 23:
+    if hora_local < 10 or hora_local > 22:
         return []
 
-    for j in res.get("response", [])[:30]:
+    for j in res.get("response", [])[:40]:
 
-        status = j["fixture"]["status"]["short"]
-        if status != "NS":
+        if j["fixture"]["status"]["short"] != "NS":
             continue
 
-        pais = j["league"]["country"].lower()
-        if pais not in ligas_boas:
+        liga = nome_liga(j["league"]["name"], j["league"]["country"])
+        if not liga:
             continue
 
         dt = datetime.fromisoformat(j["fixture"]["date"].replace("Z","+00:00"))
 
-        # ⏰ até 3h antes
-        if (dt - agora).total_seconds() > 10800:
+        if (dt - agora).total_seconds() > 7200:
             continue
 
         home = j["teams"]["home"]["name"]
         away = j["teams"]["away"]["name"]
-        liga = j["league"]["name"]
 
         dt -= timedelta(hours=4)
 
-        jogos.append((home, away, liga, pais, dt.strftime("%d/%m"), dt.strftime("%H:%M")))
+        jogos.append((home, away, liga, dt.strftime("%d/%m"), dt.strftime("%H:%M")))
 
     return jogos
 
 # 🤖 BOT
 def main():
-    global ultimo_auto
-    last_update_id = None
+    global ultimo_auto, last_update_id
 
     while True:
         try:
             # 🔥 AUTOMÁTICO
             if time.time() - ultimo_auto > 1800:
+
                 jogos = buscar_jogos()
-                filtrados = []
+                enviados = 0
 
-                for home, away, liga, pais, data_jogo, hora_jogo in jogos:
-                    chave = f"{home}-{away}"
+                for home, away, liga, data_jogo, hora_jogo in jogos:
 
+                    chave = f"{home}-{away}-{data_jogo}"
                     if chave in ultimo_envio:
                         continue
 
-                    entrada, prob, forca, ev = analisar(home, away)
+                    resultado = analisar(home, away)
+                    if not resultado:
+                        continue
 
-                    if forca < 8:
+                    entrada, prob, forca, ev = resultado
+
+                    if prob < 70 or ev < 0.10 or forca < 8:
                         continue
 
                     msg = f"""GOUVEA BET
 
 {home} x {away}
 
-🏆 {nome_liga(liga, pais)}
+🏆 {liga}
 📅 {data_jogo}
 ⏰ {hora_jogo}
 
@@ -239,16 +255,11 @@ def main():
 
                     enviar(msg)
 
-                    filtrados.append({
-                        "home": home,
-                        "away": away,
-                        "entrada": entrada
-                    })
-
                     ultimo_envio[chave] = True
+                    enviados += 1
 
-                for m in gerar_multiplas(filtrados):
-                    enviar(m)
+                    if enviados >= 3:
+                        break
 
                 ultimo_auto = time.time()
 
@@ -269,12 +280,22 @@ def main():
                     continue
 
                 home, away = texto.split(" x ")
+                home = corrigir_nome(home)
+                away = corrigir_nome(away)
 
-                entrada, prob, forca, ev = analisar(home, away)
+                resultado = analisar(home, away)
+
+                if not resultado:
+                    enviar("❌ Não foi possível analisar esse jogo")
+                    continue
+
+                entrada, prob, forca, ev = resultado
+
+                status = "✅ ENTRAR" if forca >= 8 and ev > 0 else "⚠️ MÉDIO" if forca == 7 else "❌ EVITAR"
 
                 msg = f"""GOUVEA BET
 
-{home.title()} x {away.title()}
+{home} x {away}
 
 🎯 Melhor entrada: {entrada}
 
@@ -283,7 +304,7 @@ def main():
 
 ⭐ Força: {forca}/10
 
-{"✅ ENTRAR" if forca >= 8 else "⚠️ MÉDIO"}"""
+{status}"""
 
                 enviar(msg)
 
