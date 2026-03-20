@@ -2,7 +2,6 @@ import requests
 import time
 import threading
 from datetime import datetime, timedelta, timezone
-from difflib import get_close_matches
 
 # 🔐 DADOS
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
@@ -11,8 +10,11 @@ API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
 
 HEADERS = {"x-apisports-key": API_KEY}
 
-# 🌍 LIGAS
+# 🌍 LIGA BONITA
 def nome_liga(liga):
+    if not liga:
+        return "🌍 Liga não encontrada"
+
     liga = liga.lower()
 
     if "brazil" in liga:
@@ -42,31 +44,52 @@ def nome_liga(liga):
 def buscar_time(nome):
     try:
         url = "https://v3.football.api-sports.io/teams"
-        res = requests.get(url, headers=HEADERS, params={"search": nome}, timeout=10).json()
+        res = requests.get(url, headers=HEADERS, params={"search": nome}, timeout=10)
 
-        if res["response"]:
-            return res["response"][0]["team"]["id"]
+        if res.status_code != 200:
+            return None
 
-        nomes = ["flamengo","palmeiras","corinthians","vasco","gremio"]
-        match = get_close_matches(nome.lower(), nomes, n=1, cutoff=0.6)
-
-        if match:
-            return buscar_time(match[0])
+        data = res.json()
+        if data["response"]:
+            return data["response"][0]["team"]["id"]
 
         return None
     except:
         return None
 
-# 📊 JOGOS
+# 📊 PEGAR JOGOS
 def pegar_jogos(team_id):
     try:
         url = f"https://v3.football.api-sports.io/fixtures?team={team_id}&last=10"
-        res = requests.get(url, headers=HEADERS, timeout=10).json()
-        return res.get("response", [])
+        res = requests.get(url, headers=HEADERS, timeout=10)
+
+        if res.status_code != 200:
+            return []
+
+        return res.json().get("response", [])
     except:
         return []
 
-# 🧠 CALCULAR MERCADOS + EV
+# 🔍 BUSCAR LIGA
+def buscar_liga(home, away):
+    try:
+        for i in range(0, 5):
+            data = (datetime.now(timezone.utc) + timedelta(days=i)).strftime("%Y-%m-%d")
+            url = f"https://v3.football.api-sports.io/fixtures?date={data}"
+            res = requests.get(url, headers=HEADERS).json()
+
+            for j in res.get("response", []):
+                h = j["teams"]["home"]["name"].lower()
+                a = j["teams"]["away"]["name"].lower()
+
+                if home.lower() in h and away.lower() in a:
+                    return j["league"]["name"]
+
+        return None
+    except:
+        return None
+
+# 🧠 ANÁLISE COM EV BALANCEADO
 def analisar(home, away):
     try:
         home_id = buscar_time(home)
@@ -105,7 +128,6 @@ def analisar(home, away):
         under35 = sum(1 for g in gols if g <= 3) / total
         btts_rate = btts / total
 
-        # odds simuladas (padrão mercado)
         odds = {
             "Over 1.5": 1.30,
             "Over 2.5": 1.80,
@@ -125,116 +147,81 @@ def analisar(home, away):
         }
 
         melhor = None
-        melhor_ev = -999
+        melhor_score = -999
 
         for m, prob in mercados.items():
-            ev = (prob * odds[m]) - 1
+            odd = odds[m]
+            ev = (prob * odd) - 1
 
-            if ev > melhor_ev:
-                melhor_ev = ev
+            if prob < 0.60:
+                continue
+
+            penalidade = 0
+            if odd < 1.50:
+                penalidade = 0.10
+
+            bonus = 0
+            if m in ["Over 2.5", "Ambas marcam"]:
+                bonus = 0.05
+            if m == "Over 3.5":
+                bonus = 0.03
+
+            score = ev + bonus - penalidade
+
+            if score > melhor_score:
+                melhor_score = score
                 melhor = m
                 melhor_prob = prob
+                melhor_ev = ev
 
-        forca = 9 if melhor_prob >= 0.70 else 8 if melhor_prob >= 0.65 else 7 if melhor_prob >= 0.60 else 6
+        forca = 9 if melhor_prob >= 0.70 else 8 if melhor_prob >= 0.65 else 7
 
         return melhor, int(melhor_prob*100), forca, round(melhor_ev, 2)
 
-    except:
+    except Exception as e:
+        print("ERRO:", e)
         return "Over 1.5", 50, 5, 0.05
 
 # 🧠 OBSERVAÇÃO
-def gerar_observacao(entrada, prob, forca):
+def gerar_observacao(entrada):
     if "Over 3.5" in entrada:
-        return "🧠 Jogo extremamente aberto"
+        return "🧠 Jogo muito aberto"
     elif "Over" in entrada:
         return "🧠 Tendência de gols"
     elif "Under" in entrada:
         return "🧠 Jogo mais fechado"
     elif "Ambas" in entrada:
         return "🧠 Alta chance de ambos marcarem"
-    else:
-        return "🧠 Jogo equilibrado"
+    return ""
 
-# 📲 TELEGRAM
+# 📲 ENVIAR
 def enviar(msg):
     try:
         requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                      data={"chat_id": CHAT_ID, "text": msg}, timeout=10)
+                      data={"chat_id": CHAT_ID, "text": msg})
     except:
         pass
 
-# 🤖 AUTOMÁTICO
-def modo_automatico():
-    while True:
-        try:
-            enviados = 0
-            limite = 5
-
-            data = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            url = f"https://v3.football.api-sports.io/fixtures?date={data}"
-            res = requests.get(url, headers=HEADERS).json()
-
-            agora = datetime.now(timezone.utc)
-
-            for j in res.get("response", [])[:50]:
-
-                try:
-                    dt = datetime.fromisoformat(j["fixture"]["date"].replace("Z","+00:00"))
-
-                    if dt < agora or dt > agora + timedelta(hours=6):
-                        continue
-                except:
-                    continue
-
-                if enviados >= limite:
-                    break
-
-                home = j["teams"]["home"]["name"]
-                away = j["teams"]["away"]["name"]
-                liga = j["league"]["name"]
-
-                entrada, prob, forca, ev = analisar(home, away)
-
-                if forca >= 7 and prob >= 65:
-                    obs = gerar_observacao(entrada, prob, forca)
-
-                    msg = f"""🔥 GOUVEA BET AUTO
-
-{home} x {away}
-
-🏆 {nome_liga(liga)}
-
-🎯 Melhor entrada: {entrada}
-📊 Prob: {prob}%
-💰 EV: {ev}
-⭐ Força: {forca}/10
-
-✅ ENTRAR
-
-{obs}"""
-
-                    enviar(msg)
-                    enviados += 1
-                    time.sleep(10)
-
-            time.sleep(3600)
-
-        except:
-            time.sleep(60)
-
-# 🚀 MANUAL
+# 🤖 MODO MANUAL SEM REPETIÇÃO
 def main():
     enviar("🔥 GOUVEA BET ONLINE")
 
-    last = None
+    last_update_id = None
+    processados = set()
 
     while True:
         try:
             url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
-            res = requests.get(url, params={"timeout":30,"offset":last}).json()
+            res = requests.get(url, params={"timeout":30,"offset":last_update_id}).json()
 
             for u in res.get("result", []):
-                last = u["update_id"] + 1
+                update_id = u["update_id"]
+
+                if update_id in processados:
+                    continue
+
+                processados.add(update_id)
+                last_update_id = update_id + 1
 
                 if "message" not in u or "text" not in u["message"]:
                     continue
@@ -247,14 +234,17 @@ def main():
 
                 home, away = texto.split(" x ")
 
-                entrada, prob, forca, ev = analisar(home, away)
-                obs = gerar_observacao(entrada, prob, forca)
+                liga = buscar_liga(home.strip(), away.strip())
+                entrada, prob, forca, ev = analisar(home.strip(), away.strip())
 
-                status = "✅ ENTRAR" if forca >= 8 else "⚠️ MÉDIO" if forca >=6 else "⚠️ OBSERVAR"
+                obs = gerar_observacao(entrada)
+                status = "✅ ENTRAR" if forca >= 8 else "⚠️ MÉDIO"
 
                 msg = f"""GOUVEA BET
 
 {home} x {away}
+
+🏆 {nome_liga(liga)}
 
 🎯 Melhor entrada: {entrada}
 📊 Prob: {prob}%
@@ -267,12 +257,11 @@ def main():
 
                 enviar(msg)
 
-        except:
-            pass
+        except Exception as e:
+            print("ERRO:", e)
 
         time.sleep(2)
 
 # 🚀 START
 if __name__ == "__main__":
-    threading.Thread(target=modo_automatico).start()
     main()
