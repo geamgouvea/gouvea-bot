@@ -1,5 +1,6 @@
 import requests
 import time
+import threading
 from datetime import datetime, timedelta, timezone
 
 # ================= CONFIG =================
@@ -9,13 +10,19 @@ API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
 
 HEADERS = {"x-apisports-key": API_KEY}
 
-last_update_id = None
-bot_iniciado = False
 jogos_enviados = set()
-ultimo_loop = 0
+ultimo_envio = 0
+last_update_id = None
+
+# ================= LIGAS BOAS =================
+LIGAS = [
+    "Brazil", "England", "Spain", "Italy", "Germany",
+    "France", "Netherlands", "Belgium", "Austria",
+    "Japan", "China", "South Korea", "Australia", "Saudi Arabia"
+]
 
 # ================= REQUEST =================
-def safe_request(url, params=None):
+def req(url, params=None):
     try:
         r = requests.get(url, headers=HEADERS, params=params, timeout=10)
         if r.status_code == 200:
@@ -26,14 +33,14 @@ def safe_request(url, params=None):
 
 # ================= BUSCAR TIME =================
 def buscar_time(nome):
-    data = safe_request("https://v3.football.api-sports.io/teams", {"search": nome})
-    if data and data.get("response"):
+    data = req("https://v3.football.api-sports.io/teams", {"search": nome})
+    if data and data["response"]:
         return data["response"][0]["team"]["id"]
     return None
 
 # ================= HISTÓRICO =================
-def pegar_jogos(team_id):
-    data = safe_request("https://v3.football.api-sports.io/fixtures", {
+def jogos_time(team_id):
+    data = req("https://v3.football.api-sports.io/fixtures", {
         "team": team_id,
         "last": 10
     })
@@ -49,10 +56,9 @@ def analisar(home, away):
     if not home_id or not away_id:
         return None
 
-    jogos = pegar_jogos(home_id) + pegar_jogos(away_id)
+    jogos = jogos_time(home_id) + jogos_time(away_id)
 
     gols = []
-    btts = 0
 
     for j in jogos:
         try:
@@ -62,64 +68,51 @@ def analisar(home, away):
             if g1 is None or g2 is None:
                 continue
 
-            total = g1 + g2
-            gols.append(total)
-
-            if g1 > 0 and g2 > 0:
-                btts += 1
+            gols.append(g1 + g2)
         except:
             continue
 
     if len(gols) < 6:
         return None
 
-    total_jogos = len(gols)
+    total = len(gols)
 
-    media = sum(gols) / total_jogos
-    over15 = sum(g >= 2 for g in gols) / total_jogos
-    over25 = sum(g >= 3 for g in gols) / total_jogos
-    under35 = sum(g <= 3 for g in gols) / total_jogos
-    btts_rate = btts / total_jogos
+    over15 = sum(g >= 2 for g in gols) / total
+    over25 = sum(g >= 3 for g in gols) / total
+    media = sum(gols) / total
 
-    # 🔥 PRIORIDADE CORRIGIDA
+    # 🎯 LÓGICA EQUILIBRADA
     if over25 >= 0.60 and media >= 2.4:
         entrada = "Over 2.5"
         prob = over25
-
-    elif btts_rate >= 0.58:
-        entrada = "Ambas marcam"
-        prob = btts_rate
 
     elif over15 >= 0.70:
         entrada = "Over 1.5"
         prob = over15
 
-    elif under35 >= 0.65:
-        entrada = "Under 3.5"
-        prob = under35
-
     else:
         return None
 
     prob = int(prob * 100)
-
-    if prob < 65:
-        return None
-
     forca = 10 if prob >= 85 else 9 if prob >= 78 else 8 if prob >= 70 else 7
 
     return entrada, prob, forca
 
 # ================= BUSCAR JOGOS =================
 def buscar_jogos():
-    data = safe_request("https://v3.football.api-sports.io/fixtures", {"next": 40})
+    data = req("https://v3.football.api-sports.io/fixtures", {"next": 60})
     if not data:
         return []
 
     jogos = []
     agora = datetime.utcnow()
 
-    for j in data.get("response", []):
+    for j in data["response"]:
+        liga = j["league"]["country"]
+
+        if not any(l in liga for l in LIGAS):
+            continue
+
         if j["fixture"]["status"]["short"] != "NS":
             continue
 
@@ -137,34 +130,40 @@ def buscar_jogos():
 
     return jogos
 
-# ================= ENVIAR =================
+# ================= TELEGRAM =================
 def enviar(msg):
     try:
         requests.post(
             f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": msg},
-            timeout=10
+            data={"chat_id": CHAT_ID, "text": msg}
         )
     except:
         pass
 
-# ================= AUTOMÁTICO =================
-def enviar_sinais():
-    jogos = buscar_jogos()
-    enviados = 0
+# ================= SINAIS AUTOMÁTICOS =================
+def auto_sinais():
+    global ultimo_envio
 
-    for home, away, hora in jogos:
-        chave = f"{home}x{away}"
+    while True:
+        try:
+            agora = time.time()
 
-        if chave in jogos_enviados:
-            continue
+            if agora - ultimo_envio > 1200:  # 20 minutos
+                jogos = buscar_jogos()
+                enviados = 0
 
-        resultado = analisar(home, away)
+                for home, away, hora in jogos:
+                    chave = f"{home}x{away}"
 
-        if resultado:
-            entrada, prob, forca = resultado
+                    if chave in jogos_enviados:
+                        continue
 
-            msg = f"""🔥 SINAL AUTOMÁTICO
+                    res = analisar(home, away)
+
+                    if res:
+                        entrada, prob, forca = res
+
+                        msg = f"""🔥 SINAL
 
 ⚽ {home} x {away}
 ⏰ {hora}
@@ -174,23 +173,29 @@ def enviar_sinais():
 ⭐ {forca}/10
 """
 
-            enviar(msg)
-            jogos_enviados.add(chave)
-            enviados += 1
+                        enviar(msg)
+                        jogos_enviados.add(chave)
+                        enviados += 1
 
-        if enviados >= 3:
-            break
+                    if enviados >= 3:
+                        break
+
+                ultimo_envio = agora
+
+        except:
+            pass
+
+        time.sleep(10)
 
 # ================= MÚLTIPLA =================
-def gerar_multipla(qtd=3):
+def gerar_multipla(qtd=5):
     jogos = buscar_jogos()
     picks = []
 
     for home, away, _ in jogos:
-        resultado = analisar(home, away)
-
-        if resultado:
-            entrada, prob, forca = resultado
+        res = analisar(home, away)
+        if res:
+            entrada, prob, forca = res
 
             if forca >= 7:
                 picks.append((home, away, entrada, prob))
@@ -200,7 +205,7 @@ def gerar_multipla(qtd=3):
     if len(picks) < 2:
         return "❌ Sem múltipla forte agora"
 
-    msg = "🔥 MÚLTIPLA INTELIGENTE\n\n"
+    msg = "🔥 MÚLTIPLA DO DIA\n\n"
 
     for i, (h, a, e, p) in enumerate(picks[:qtd], 1):
         msg += f"{i}️⃣ {h} x {a}\n🎯 {e} ({p}%)\n\n"
@@ -208,7 +213,7 @@ def gerar_multipla(qtd=3):
     return msg
 
 # ================= MANUAL =================
-def analise_manual(texto):
+def manual(texto):
     if "x" not in texto:
         enviar("Formato: Time A x Time B")
         return
@@ -220,13 +225,13 @@ def analise_manual(texto):
     except:
         return
 
-    resultado = analisar(home, away)
+    res = analisar(home, away)
 
-    if not resultado:
+    if not res:
         enviar("⚠️ Sem valor agora")
         return
 
-    entrada, prob, forca = resultado
+    entrada, prob, forca = res
 
     msg = f"""🔍 ANÁLISE
 
@@ -241,27 +246,18 @@ def analise_manual(texto):
 
 # ================= MAIN =================
 def main():
-    global last_update_id, bot_iniciado, ultimo_loop
+    global last_update_id
 
-    if not bot_iniciado:
-        enviar("🤖 Gouvea Bet Inteligente Online!")
-        bot_iniciado = True
+    enviar("🤖 Gouvea Bet FINAL Online!")
 
     while True:
         try:
-            agora = time.time()
-
-            # 🔁 LOOP 20 MIN
-            if agora - ultimo_loop > 1200:
-                enviar_sinais()
-                ultimo_loop = agora
-
-            res = requests.get(
+            updates = requests.get(
                 f"https://api.telegram.org/bot{TOKEN}/getUpdates",
                 params={"timeout": 10, "offset": last_update_id}
             ).json()
 
-            for u in res.get("result", []):
+            for u in updates.get("result", []):
                 last_update_id = u["update_id"] + 1
 
                 if "message" not in u:
@@ -271,15 +267,17 @@ def main():
 
                 if texto.startswith("multipla"):
                     partes = texto.split()
-                    qtd = int(partes[1]) if len(partes) > 1 else 3
+                    qtd = int(partes[1]) if len(partes) > 1 else 5
                     enviar(gerar_multipla(qtd))
                 else:
-                    analise_manual(texto)
+                    manual(texto)
 
         except:
             pass
 
-        time.sleep(5)
+        time.sleep(2)
 
+# ================= START =================
 if __name__ == "__main__":
+    threading.Thread(target=auto_sinais).start()
     main()
