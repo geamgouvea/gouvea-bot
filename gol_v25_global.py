@@ -1,6 +1,6 @@
 import requests
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # 🔐 CONFIG
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
@@ -9,8 +9,10 @@ API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
 HEADERS = {"x-apisports-key": API_KEY}
 
 last_update_id = None
-jogos_usados = set()
+jogos_enviados = set()
 ultimo_envio = 0
+
+TEMPO_ENVIO = 1800  # 1800 = 30 min | 3600 = 1 hora
 
 # 🔥 REQUEST
 def safe_request(url, params=None):
@@ -22,33 +24,21 @@ def safe_request(url, params=None):
         return None
     return None
 
-# 📲 ENVIAR
-def enviar(chat_id, msg):
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-            data={"chat_id": chat_id, "text": msg},
-            timeout=10
-        )
-    except:
-        pass
-
-# 🔍 TIME
+# 🔎 BUSCAR TIME
 def buscar_time(nome):
     res = safe_request("https://v3.football.api-sports.io/teams", {"search": nome})
-    if not res: return None
-    data = res.json()
-    if data["response"]:
-        return data["response"][0]["team"]["id"]
+    if res and res.json()["response"]:
+        return res.json()["response"][0]["team"]["id"]
     return None
 
 # 📊 HISTÓRICO
 def pegar_jogos(team_id):
     res = safe_request(f"https://v3.football.api-sports.io/fixtures?team={team_id}&last=10")
-    if not res: return []
-    return res.json().get("response", [])
+    if res:
+        return res.json().get("response", [])
+    return []
 
-# 🧠 ANÁLISE
+# 🧠 ANÁLISE COMPLETA
 def analisar(home, away):
     home_id = buscar_time(home)
     away_id = buscar_time(away)
@@ -56,41 +46,32 @@ def analisar(home, away):
     if not home_id or not away_id:
         return None
 
-    jogos_home = pegar_jogos(home_id)
-    jogos_away = pegar_jogos(away_id)
+    jogos = pegar_jogos(home_id) + pegar_jogos(away_id)
 
     gols = []
     btts = 0
-    win_home = 0
-    win_away = 0
+    casa = 0
+    fora = 0
 
-    for j in jogos_home:
+    for j in jogos:
         try:
             g1 = j["goals"]["home"]
             g2 = j["goals"]["away"]
+
             if g1 is None or g2 is None:
                 continue
 
-            gols.append(g1 + g2)
+            total = g1 + g2
+            gols.append(total)
+
             if g1 > 0 and g2 > 0:
                 btts += 1
+
             if g1 > g2:
-                win_home += 1
-        except:
-            continue
+                casa += 1
+            elif g2 > g1:
+                fora += 1
 
-    for j in jogos_away:
-        try:
-            g1 = j["goals"]["home"]
-            g2 = j["goals"]["away"]
-            if g1 is None or g2 is None:
-                continue
-
-            gols.append(g1 + g2)
-            if g1 > 0 and g2 > 0:
-                btts += 1
-            if g2 > g1:
-                win_away += 1
         except:
             continue
 
@@ -100,108 +81,131 @@ def analisar(home, away):
     total = len(gols)
 
     stats = {
+        "Over 1.5": sum(g >= 2 for g in gols) / total,
         "Over 2.5": sum(g >= 3 for g in gols) / total,
-        "Ambas marcam": btts / total,
         "Under 3.5": sum(g <= 3 for g in gols) / total,
-        "Casa vence": win_home / len(jogos_home) if jogos_home else 0,
-        "Fora vence": win_away / len(jogos_away) if jogos_away else 0
+        "Ambas marcam": btts / total,
+        "Casa vence": casa / total,
+        "Fora vence": fora / total
     }
 
     melhor = max(stats, key=stats.get)
     prob = int(stats[melhor] * 100)
 
+    # 🔥 FILTRO PESADO
     if prob < 75:
         return None
 
     return melhor, prob
 
-# ⚽ BUSCAR JOGOS
+# ⚽ BUSCAR JOGOS (PRÓXIMAS 12H)
 def buscar_jogos():
     jogos = []
-    hoje = datetime.utcnow().strftime("%Y-%m-%d")
+    agora = datetime.utcnow()
+    limite = agora + timedelta(hours=12)
 
-    res = safe_request(f"https://v3.football.api-sports.io/fixtures?date={hoje}")
+    res = safe_request("https://v3.football.api-sports.io/fixtures", {
+        "date": agora.strftime("%Y-%m-%d")
+    })
+
     if not res:
         return []
 
-    data = res.json()
-    agora = datetime.now()
+    for j in res.json().get("response", []):
+        try:
+            if j["fixture"]["status"]["short"] != "NS":
+                continue
 
-    for j in data.get("response", []):
-        if j["fixture"]["status"]["short"] != "NS":
+            dt = datetime.fromisoformat(j["fixture"]["date"].replace("Z","+00:00"))
+
+            if not (agora <= dt <= limite):
+                continue
+
+            home = j["teams"]["home"]["name"]
+            away = j["teams"]["away"]["name"]
+
+            chave = f"{home}-{away}"
+
+            if chave in jogos_enviados:
+                continue
+
+            jogos.append((home, away, dt.strftime("%H:%M")))
+
+        except:
             continue
-
-        dt = datetime.fromisoformat(j["fixture"]["date"].replace("Z","+00:00"))
-        dt = dt.astimezone()
-
-        diff = (dt - agora).total_seconds()
-
-        if diff < 0 or diff > 43200:
-            continue
-
-        home = j["teams"]["home"]["name"]
-        away = j["teams"]["away"]["name"]
-
-        chave = f"{home}-{away}"
-
-        if chave in jogos_usados:
-            continue
-
-        jogos.append((home, away, dt.strftime("%H:%M"), chave))
 
     return jogos
 
-# 🔥 MULTIPLA INTELIGENTE
+# 🔥 GERAR MULTIPLA AUTOMÁTICA
 def gerar_multipla(qtd=3):
     jogos = buscar_jogos()
     picks = []
 
-    usados_tipos = set()
+    for home, away, hora in jogos:
+        analise = analisar(home, away)
 
-    for home, away, hora, chave in jogos:
-        resultado = analisar(home, away)
-
-        if not resultado:
-            continue
-
-        tipo, prob = resultado
-
-        # evitar repetir tipo
-        if tipo in usados_tipos:
-            continue
-
-        usados_tipos.add(tipo)
-        jogos_usados.add(chave)
-
-        picks.append((home, away, tipo, prob, hora))
+        if analise:
+            mercado, prob = analise
+            picks.append((home, away, mercado, prob, hora))
 
     picks.sort(key=lambda x: x[3], reverse=True)
-    picks = picks[:qtd]
 
     if not picks:
-        return "❌ Nenhuma múltipla forte encontrada"
+        return None
 
-    msg = "🔥 GOUVEA BET – MÚLTIPLA ABSURDA\n\n"
+    picks = picks[:qtd]
 
-    for i, (h, a, t, p, hr) in enumerate(picks, 1):
-        msg += f"{i}️⃣ {h} x {a}\n⏰ {hr}\n🎯 {t} ({p}%)\n\n"
+    msg = "🔥 GOUVEA BET – SINAL AUTOMÁTICO\n\n"
+
+    for i, (h, a, m, p, hr) in enumerate(picks, 1):
+        msg += f"{i}️⃣ {h} x {a}\n⏰ {hr}\n🎯 {m} ({p}%)\n\n"
+        jogos_enviados.add(f"{h}-{a}")
 
     return msg
+
+# 🔍 PESQUISA MANUAL
+def pesquisa_manual(texto):
+    if " x " not in texto:
+        return "❌ Use: Time1 x Time2"
+
+    home, away = texto.split(" x ")
+    resultado = analisar(home.strip(), away.strip())
+
+    if not resultado:
+        return "❌ Jogo fraco ou sem dados"
+
+    mercado, prob = resultado
+
+    return f"🔎 {home} x {away}\n🎯 {mercado}\n📊 Probabilidade: {prob}%"
+
+# 📲 ENVIAR
+def enviar(msg):
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+            data={"chat_id": CHAT_ID, "text": msg}
+        )
+    except:
+        pass
 
 # 🤖 BOT
 def main():
     global last_update_id, ultimo_envio
 
-    print("BOT ABSURDO ONLINE 🚀")
+    print("BOT ONLINE 🚀")
 
     while True:
         try:
-            # 🔥 AUTO ENVIO
-            if time.time() - ultimo_envio > 1800:
-                msg = gerar_multipla(3)
-                enviar(CHAT_ID_FIXO, msg)
-                ultimo_envio = time.time()
+            agora = time.time()
 
+            # 🔥 ENVIO AUTOMÁTICO
+            if agora - ultimo_envio > TEMPO_ENVIO:
+                msg = gerar_multipla(3)
+                if msg:
+                    enviar(msg)
+                ultimo_envio = agora
+
+            # 🔥 COMANDOS TELEGRAM
             res = requests.get(
                 f"https://api.telegram.org/bot{TOKEN}/getUpdates",
                 params={"timeout": 30, "offset": last_update_id}
@@ -210,33 +214,21 @@ def main():
             for u in res.get("result", []):
                 last_update_id = u["update_id"] + 1
 
-                if "message" not in u or "text" not in u["message"]:
+                if "message" not in u:
                     continue
 
-                chat_id = u["message"]["chat"]["id"]
                 texto = u["message"]["text"].lower().strip()
 
                 if texto == "/start":
-                    enviar(chat_id, "🤖 BOT ATIVO – use: multipla 3 ou Time A x Time B")
-                    continue
+                    enviar("🤖 Gouvea Bet Online!\n\nUse:\nmultipla 3\nou\nTime x Time")
 
-                if texto.startswith("multipla"):
+                elif texto.startswith("multipla"):
                     partes = texto.split()
                     qtd = int(partes[1]) if len(partes) > 1 else 3
-                    enviar(chat_id, gerar_multipla(qtd))
-                    continue
+                    enviar(gerar_multipla(qtd) or "❌ Nenhum jogo forte")
 
-                if " x " in texto:
-                    home, away = texto.split(" x ")
-                    r = analisar(home, away)
-
-                    if not r:
-                        enviar(chat_id, "❌ Jogo fraco ou sem dados")
-                        continue
-
-                    tipo, prob = r
-                    enviar(chat_id, f"{home} x {away}\n🎯 {tipo}\n📊 {prob}%")
-                    continue
+                elif " x " in texto:
+                    enviar(pesquisa_manual(texto))
 
         except Exception as e:
             print("ERRO:", e)
