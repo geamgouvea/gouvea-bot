@@ -3,14 +3,13 @@ import time
 import difflib
 from datetime import datetime, timedelta, timezone
 
+# 🔐 CONFIGURE AQUI
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
-API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5
+API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
 
 HEADERS = {"x-apisports-key": API_KEY}
 
-ultimo_envio = {}
-ultimo_auto = 0
 last_update_id = None
 
 # 🔥 REQUEST SEGURO
@@ -88,26 +87,6 @@ def pegar_jogos(team_id):
     except:
         return []
 
-# 🧠 INTERPRETAÇÃO
-def interpretar_entrada(entrada):
-    if entrada == "Over 1.5":
-        return "Alta tendência de gols"
-    elif entrada == "Over 2.5":
-        return "Jogo propenso a gols"
-    elif entrada == "Ambas marcam":
-        return "Ambas equipes ofensivas"
-    elif entrada == "Under 3.5":
-        return "Jogo mais controlado"
-    return "Análise padrão"
-
-def definir_status(forca, ev):
-    if forca >= 8 and ev > 0:
-        return "✅ ENTRAR"
-    elif forca == 7:
-        return "⚠️ OBSERVAR"
-    else:
-        return "❌ EVITAR"
-
 # 🧠 ANÁLISE
 def analisar(home, away):
     home_id, sug_home = buscar_time(home)
@@ -174,118 +153,54 @@ def analisar(home, away):
 # 📲 ENVIAR
 def enviar(msg):
     try:
-        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                      data={"chat_id": CHAT_ID, "text": msg}, timeout=10)
+        requests.post(
+            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+            data={"chat_id": CHAT_ID, "text": msg},
+            timeout=10
+        )
     except:
         pass
 
-# 🏆 LIGA
-def nome_liga(liga, pais=""):
-    liga = liga.lower()
-    pais = pais.lower()
-
-    if "brazil" in pais:
-        if "serie a" in liga:
-            return "🇧🇷 Campeonato Brasileiro – Série A"
-        elif "serie b" in liga:
-            return "🇧🇷 Campeonato Brasileiro – Série B"
-
-    if "england" in pais:
-        return "🏴 Premier League"
-    if "spain" in pais:
-        return "🇪🇸 La Liga"
-    if "germany" in pais:
-        return "🇩🇪 Bundesliga"
-    if "italy" in pais:
-        return "🇮🇹 Serie A"
-    if "france" in pais:
-        return "🇫🇷 Ligue 1"
-
-    return "🌍 Liga não encontrada"
-
-# ⏰ FILTRO HORÁRIO
-def filtrar_por_periodo(hora, periodo):
-    h = int(hora.split(":")[0])
-
-    if periodo == "madrugada":
-        return 0 <= h < 8
-    elif periodo == "manha":
-        return 8 <= h < 12
-    elif periodo == "tarde":
-        return 12 <= h < 18
-    elif periodo == "noite":
-        return 18 <= h <= 23
-
-    return True
-
-# ⚽ BUSCAR JOGOS
-def buscar_jogos():
+# 🔥 MULTIPLA
+def gerar_multipla(qtd=3):
     jogos = []
     hoje = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     res = safe_request(f"https://v3.football.api-sports.io/fixtures?date={hoje}")
     if not res:
-        return []
+        return "❌ Erro ao buscar jogos"
 
     data = res.json()
-    agora = datetime.now(timezone.utc)
 
-    for j in data.get("response", [])[:50]:
-
+    for j in data.get("response", [])[:30]:
         if j["fixture"]["status"]["short"] != "NS":
-            continue
-
-        dt = datetime.fromisoformat(j["fixture"]["date"].replace("Z","+00:00"))
-
-        if (dt - agora).total_seconds() > 7200:
             continue
 
         home = j["teams"]["home"]["name"]
         away = j["teams"]["away"]["name"]
 
-        dt -= timedelta(hours=4)
-
-        jogos.append((home, away, j["league"]["name"], j["league"]["country"],
-                      dt.strftime("%d/%m"), dt.strftime("%H:%M")))
-
-    return jogos
-
-# 🔥 MULTIPLA
-def gerar_multipla(qtd=3, periodo=None):
-    jogos = buscar_jogos()
-    selecionados = []
-
-    for home, away, liga, pais, data_jogo, hora in jogos:
-
-        if periodo and not filtrar_por_periodo(hora, periodo):
-            continue
-
         resultado, _, _ = analisar(home, away)
         if not resultado:
             continue
 
-        entrada, prob, forca, ev = resultado
+        entrada, prob, _, _ = resultado
 
-        if prob < 65:
+        if prob < 70:
             continue
 
-        selecionados.append((home, away, entrada, prob, hora))
+        jogos.append((home, away, entrada, prob))
 
-    selecionados.sort(key=lambda x: x[3], reverse=True)
+    jogos.sort(key=lambda x: x[3], reverse=True)
 
-    multipla = selecionados[:qtd]
+    selecionados = jogos[:qtd]
 
-    if not multipla:
+    if not selecionados:
         return "❌ Nenhuma múltipla encontrada"
 
     msg = "🔥 GOUVEA BET – MÚLTIPLA\n\n"
-    soma = 0
 
-    for i, (home, away, entrada, prob, hora) in enumerate(multipla, 1):
-        msg += f"{i}️⃣ {home} x {away}\n⏰ {hora}\n🎯 {entrada} ({prob}%)\n\n"
-        soma += prob
-
-    msg += f"📊 Confiança média: {int(soma/len(multipla))}%"
+    for i, (home, away, entrada, prob) in enumerate(selecionados, 1):
+        msg += f"{i}️⃣ {home} x {away}\n🎯 {entrada} ({prob}%)\n\n"
 
     return msg
 
@@ -293,53 +208,61 @@ def gerar_multipla(qtd=3, periodo=None):
 def main():
     global last_update_id
 
+    print("BOT ONLINE...")
+
     while True:
         try:
-            res = requests.get(f"https://api.telegram.org/bot{TOKEN}/getUpdates",
-                               params={"timeout":30,"offset":last_update_id}).json()
+            res = requests.get(
+                f"https://api.telegram.org/bot{TOKEN}/getUpdates",
+                params={"timeout": 30, "offset": last_update_id}
+            )
 
-            for u in res.get("result", []):
+            data = res.json() if res.status_code == 200 else {}
+
+            for u in data.get("result", []):
                 last_update_id = u["update_id"] + 1
 
                 if "message" not in u:
                     continue
 
                 texto = u["message"]["text"].lower().strip()
+                print("Recebi:", texto)
 
                 # MULTIPLA
                 if texto.startswith("multipla"):
                     partes = texto.split()
-
-                    try:
-                        qtd = int(partes[1])
-                    except:
-                        qtd = 3
-
-                    periodo = partes[2] if len(partes) > 2 else None
-
-                    if periodo == "manhã":
-                        periodo = "manha"
-
-                    enviar(gerar_multipla(qtd, periodo))
+                    qtd = int(partes[1]) if len(partes) > 1 else 3
+                    enviar(gerar_multipla(qtd))
                     continue
 
                 # INDIVIDUAL
-                if "x" not in texto:
+                if " x " not in texto:
                     enviar("Formato: Time A x Time B")
                     continue
 
-                home, away = texto.split(" x ")
+                partes = texto.split(" x ")
+                if len(partes) != 2:
+                    enviar("Formato: Time A x Time B")
+                    continue
+
+                home, away = partes
 
                 resultado, sug_home, sug_away = analisar(home, away)
 
                 if not resultado:
-                    enviar("❌ Não encontrei esse jogo")
+                    msg = "❌ Não encontrei esse jogo\n\n"
+
+                    if sug_home:
+                        msg += f"Sugestões casa: {', '.join(sug_home)}\n"
+                    if sug_away:
+                        msg += f"Sugestões fora: {', '.join(sug_away)}"
+
+                    enviar(msg)
                     continue
 
                 entrada, prob, forca, ev = resultado
 
-                status = definir_status(forca, ev)
-                analise_txt = interpretar_entrada(entrada)
+                status = "✅ ENTRAR" if forca >= 8 else "⚠️ OBSERVAR"
 
                 msg = f"""GOUVEA BET
 
@@ -354,7 +277,7 @@ def main():
 
 {status}
 
-🧠 {analise_txt}"""
+🧠 Análise baseada em dados reais"""
 
                 enviar(msg)
 
