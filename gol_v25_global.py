@@ -1,24 +1,34 @@
 import requests
 import time
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 # ================= CONFIG =================
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
-
 HEADERS = {"x-apisports-key": API_KEY}
 
 jogos_enviados = set()
 ultimo_envio = 0
 last_update_id = None
 
-# ================= LIGAS BOAS =================
-LIGAS = [
-    "Brazil", "England", "Spain", "Italy", "Germany",
-    "France", "Netherlands", "Belgium", "Austria",
-    "Japan", "China", "South Korea", "Australia", "Saudi Arabia"
+# ================= LIGAS PERMITIDAS (TOP) =================
+LIGAS_PERMITIDAS = [
+    "Brazil",
+    "England",
+    "Spain",
+    "Italy",
+    "Germany",
+    "France",
+    "Netherlands",
+    "Belgium",
+    "Austria",
+    "Portugal",
+    "Japan",
+    "South Korea",
+    "Australia",
+    "Saudi Arabia"
 ]
 
 # ================= REQUEST =================
@@ -48,7 +58,7 @@ def jogos_time(team_id):
         return data.get("response", [])
     return []
 
-# ================= ANÁLISE INTELIGENTE =================
+# ================= ANÁLISE =================
 def analisar(home, away):
     home_id = buscar_time(home)
     away_id = buscar_time(away)
@@ -76,20 +86,18 @@ def analisar(home, away):
         return None
 
     total = len(gols)
+    media = sum(gols) / total
 
     over15 = sum(g >= 2 for g in gols) / total
     over25 = sum(g >= 3 for g in gols) / total
-    media = sum(gols) / total
 
-    # 🎯 LÓGICA EQUILIBRADA
-    if over25 >= 0.60 and media >= 2.4:
+    # 🎯 EQUILÍBRIO
+    if over25 >= 0.55 and media >= 2.3:
         entrada = "Over 2.5"
         prob = over25
-
-    elif over15 >= 0.70:
+    elif over15 >= 0.65:
         entrada = "Over 1.5"
         prob = over15
-
     else:
         return None
 
@@ -98,9 +106,14 @@ def analisar(home, away):
 
     return entrada, prob, forca
 
+# ================= FILTRO DE LIGAS =================
+def liga_permitida(nome_liga):
+    nome = nome_liga.lower()
+    return any(l.lower() in nome for l in LIGAS_PERMITIDAS)
+
 # ================= BUSCAR JOGOS =================
 def buscar_jogos():
-    data = req("https://v3.football.api-sports.io/fixtures", {"next": 60})
+    data = req("https://v3.football.api-sports.io/fixtures", {"next": 80})
     if not data:
         return []
 
@@ -108,9 +121,10 @@ def buscar_jogos():
     agora = datetime.utcnow()
 
     for j in data["response"]:
-        liga = j["league"]["country"]
+        liga_nome = j["league"]["country"]
 
-        if not any(l in liga for l in LIGAS):
+        # 🔥 FILTRO AQUI
+        if not liga_permitida(liga_nome):
             continue
 
         if j["fixture"]["status"]["short"] != "NS":
@@ -140,7 +154,7 @@ def enviar(msg):
     except:
         pass
 
-# ================= SINAIS AUTOMÁTICOS =================
+# ================= AUTO =================
 def auto_sinais():
     global ultimo_envio
 
@@ -148,7 +162,7 @@ def auto_sinais():
         try:
             agora = time.time()
 
-            if agora - ultimo_envio > 1200:  # 20 minutos
+            if agora - ultimo_envio > 1200:
                 jogos = buscar_jogos()
                 enviados = 0
 
@@ -196,7 +210,6 @@ def gerar_multipla(qtd=5):
         res = analisar(home, away)
         if res:
             entrada, prob, forca = res
-
             if forca >= 7:
                 picks.append((home, away, entrada, prob))
 
@@ -248,7 +261,7 @@ def manual(texto):
 def main():
     global last_update_id
 
-    enviar("🤖 Gouvea Bet FINAL Online!")
+    enviar("🤖 Gouvea Bet LIGAS FILTRADAS Online!")
 
     while True:
         try:
