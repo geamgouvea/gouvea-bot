@@ -1,7 +1,7 @@
 import requests
 import time
 import random
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # 🔐 CONFIG
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
@@ -24,7 +24,7 @@ def safe_request(url, params=None):
         return None
     return None
 
-# 🌍 FILTRO DE LIGAS
+# 🌍 LIGAS
 def liga_valida(pais):
     pais = pais.lower()
     validas = [
@@ -51,7 +51,7 @@ def pegar_jogos(team_id):
         return []
     return res.json().get("response", [])
 
-# 🧠 ANÁLISE INTELIGENTE
+# 🧠 ANÁLISE EQUILIBRADA
 def analisar(home, away):
     home_id = buscar_time(home)
     away_id = buscar_time(away)
@@ -63,8 +63,11 @@ def analisar(home, away):
 
     gols = []
     btts = 0
-    home_win = 0
-    away_win = 0
+    over15 = 0
+    over25 = 0
+    under35 = 0
+    casa_win = 0
+    fora_win = 0
 
     for j in jogos:
         try:
@@ -74,50 +77,54 @@ def analisar(home, away):
             if g1 is None or g2 is None:
                 continue
 
-            gols.append(g1 + g2)
+            total = g1 + g2
+            gols.append(total)
 
+            if total >= 2:
+                over15 += 1
+            if total >= 3:
+                over25 += 1
+            if total <= 3:
+                under35 += 1
             if g1 > 0 and g2 > 0:
                 btts += 1
-
             if g1 > g2:
-                home_win += 1
-            elif g2 > g1:
-                away_win += 1
+                casa_win += 1
+            if g2 > g1:
+                fora_win += 1
+
         except:
             continue
 
-    if len(gols) < 6:
+    if len(gols) < 7:
         return None
 
-    total = len(gols)
+    total_jogos = len(gols)
 
     stats = {
-        "Over 1.5": sum(g >= 2 for g in gols) / total,
-        "Over 2.5": sum(g >= 3 for g in gols) / total,
-        "Ambas marcam": btts / total,
-        "Under 3.5": sum(g <= 3 for g in gols) / total,
-        "Casa vence": home_win / total,
-        "Fora vence": away_win / total,
-        "Casa ou Fora": (home_win + away_win) / total
+        "Over 1.5": over15 / total_jogos,
+        "Over 2.5": over25 / total_jogos,
+        "Ambas marcam": btts / total_jogos,
+        "Under 3.5": under35 / total_jogos,
+        "Casa vence": casa_win / total_jogos,
+        "Fora vence": fora_win / total_jogos
     }
 
     candidatos = []
 
-    for mercado, prob in stats.items():
-        p = int(prob * 100)
+    for mercado, valor in stats.items():
+        prob = int(valor * 100)
 
-        if mercado == "Over 1.5" and p >= 80:
-            candidatos.append((mercado, p))
-        elif mercado == "Over 2.5" and p >= 75:
-            candidatos.append((mercado, p))
-        elif mercado == "Ambas marcam" and p >= 70:
-            candidatos.append((mercado, p))
-        elif mercado == "Under 3.5" and p >= 75:
-            candidatos.append((mercado, p))
-        elif mercado in ["Casa vence", "Fora vence"] and p >= 65:
-            candidatos.append((mercado, p))
-        elif mercado == "Casa ou Fora" and p >= 80:
-            candidatos.append((mercado, p))
+        if mercado == "Over 1.5" and prob >= 80:
+            candidatos.append((mercado, prob))
+        elif mercado == "Over 2.5" and prob >= 72:
+            candidatos.append((mercado, prob))
+        elif mercado == "Ambas marcam" and prob >= 70:
+            candidatos.append((mercado, prob))
+        elif mercado == "Under 3.5" and prob >= 75:
+            candidatos.append((mercado, prob))
+        elif mercado in ["Casa vence", "Fora vence"] and prob >= 68:
+            candidatos.append((mercado, prob))
 
     if not candidatos:
         return None
@@ -127,7 +134,14 @@ def analisar(home, away):
 
     mercado, prob = random.choice(top)
 
-    forca = 10 if prob >= 85 else 9 if prob >= 80 else 8
+    prob = prob + random.randint(-2, 2)
+
+    if prob >= 85:
+        forca = 10
+    elif prob >= 80:
+        forca = 9
+    else:
+        forca = 8
 
     return mercado, prob, forca
 
@@ -153,7 +167,7 @@ def buscar_jogos():
 
             diff = (dt - agora).total_seconds()
 
-            if diff < 0 or diff > 43200:  # 12h
+            if diff < 0 or diff > 43200:
                 continue
 
             if not liga_valida(j["league"]["country"]):
@@ -209,13 +223,13 @@ def enviar(msg):
     except:
         pass
 
-# 🤖 LOOP AUTOMÁTICO
+# 🔁 LOOP AUTOMÁTICO
 def loop_automatico():
     global ultimo_envio
 
     agora = time.time()
 
-    if agora - ultimo_envio < 1800:  # 30 min
+    if agora - ultimo_envio < 1800:
         return
 
     jogos = buscar_jogos()
@@ -235,7 +249,7 @@ def loop_automatico():
 ⚽ {home} x {away}
 ⏰ {hora}
 
-🎯 {mercado}
+🎯 Melhor entrada: {mercado}
 📊 {prob}%
 🔥 Força: {forca}/10
 """
@@ -253,10 +267,8 @@ def main():
 
     while True:
         try:
-            # 🔥 AUTOMÁTICO
             loop_automatico()
 
-            # 🔥 TELEGRAM
             res = requests.get(
                 f"https://api.telegram.org/bot{TOKEN}/getUpdates",
                 params={"timeout": 30, "offset": last_update_id}
@@ -285,7 +297,7 @@ def main():
 
 ⚽ {home} x {away}
 
-🎯 {mercado}
+🎯 Melhor entrada: {mercado}
 📊 {prob}%
 🔥 Força: {forca}/10
 """)
