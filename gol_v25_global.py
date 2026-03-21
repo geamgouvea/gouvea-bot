@@ -78,20 +78,19 @@ def analisar(home, away):
     media = sum(gols) / total_jogos
     over15 = sum(g >= 2 for g in gols) / total_jogos
     over25 = sum(g >= 3 for g in gols) / total_jogos
-    over35 = sum(g >= 4 for g in gols) / total_jogos
     under35 = sum(g <= 3 for g in gols) / total_jogos
     btts_rate = btts / total_jogos
 
-    # 🔥 PRIORIDADE INTELIGENTE
-    if over25 >= 0.65 and media >= 2.5:
+    # 🔥 PRIORIDADE CORRIGIDA
+    if over25 >= 0.60 and media >= 2.4:
         entrada = "Over 2.5"
         prob = over25
 
-    elif btts_rate >= 0.60:
+    elif btts_rate >= 0.58:
         entrada = "Ambas marcam"
         prob = btts_rate
 
-    elif over15 >= 0.75:
+    elif over15 >= 0.70:
         entrada = "Over 1.5"
         prob = over15
 
@@ -104,16 +103,16 @@ def analisar(home, away):
 
     prob = int(prob * 100)
 
-    if prob < 70:
+    if prob < 65:
         return None
 
-    forca = 10 if prob >= 85 else 9 if prob >= 78 else 7
+    forca = 10 if prob >= 85 else 9 if prob >= 78 else 8 if prob >= 70 else 7
 
     return entrada, prob, forca
 
 # ================= BUSCAR JOGOS =================
 def buscar_jogos():
-    data = safe_request("https://v3.football.api-sports.io/fixtures", {"next": 30})
+    data = safe_request("https://v3.football.api-sports.io/fixtures", {"next": 40})
     if not data:
         return []
 
@@ -152,7 +151,7 @@ def enviar(msg):
 # ================= AUTOMÁTICO =================
 def enviar_sinais():
     jogos = buscar_jogos()
-    enviados_agora = 0
+    enviados = 0
 
     for home, away, hora in jogos:
         chave = f"{home}x{away}"
@@ -172,47 +171,15 @@ def enviar_sinais():
 
 🎯 {entrada}
 📊 {prob}%
-🔥 Força: {forca}/10
+⭐ {forca}/10
 """
 
             enviar(msg)
             jogos_enviados.add(chave)
-            enviados_agora += 1
+            enviados += 1
 
-        if enviados_agora >= 3:
+        if enviados >= 3:
             break
-
-# ================= MANUAL =================
-def analise_manual(texto):
-    if "x" not in texto:
-        enviar("Formato: Time A x Time B")
-        return
-
-    try:
-        home, away = texto.split("x")
-        home = home.strip()
-        away = away.strip()
-    except:
-        return
-
-    resultado = analisar(home, away)
-
-    if not resultado:
-        enviar("⚠️ Mercado sem valor agora")
-        return
-
-    entrada, prob, forca = resultado
-
-    msg = f"""🔍 ANÁLISE
-
-⚽ {home} x {away}
-
-🎯 Melhor entrada: {entrada}
-📊 {prob}%
-🔥 Força: {forca}/10
-"""
-
-    enviar(msg)
 
 # ================= MÚLTIPLA =================
 def gerar_multipla(qtd=3):
@@ -221,6 +188,7 @@ def gerar_multipla(qtd=3):
 
     for home, away, _ in jogos:
         resultado = analisar(home, away)
+
         if resultado:
             entrada, prob, forca = resultado
 
@@ -239,6 +207,38 @@ def gerar_multipla(qtd=3):
 
     return msg
 
+# ================= MANUAL =================
+def analise_manual(texto):
+    if "x" not in texto:
+        enviar("Formato: Time A x Time B")
+        return
+
+    try:
+        home, away = texto.split("x")
+        home = home.strip()
+        away = away.strip()
+    except:
+        return
+
+    resultado = analisar(home, away)
+
+    if not resultado:
+        enviar("⚠️ Sem valor agora")
+        return
+
+    entrada, prob, forca = resultado
+
+    msg = f"""🔍 ANÁLISE
+
+⚽ {home} x {away}
+
+🎯 {entrada}
+📊 {prob}%
+⭐ {forca}/10
+"""
+
+    enviar(msg)
+
 # ================= MAIN =================
 def main():
     global last_update_id, bot_iniciado, ultimo_loop
@@ -251,7 +251,7 @@ def main():
         try:
             agora = time.time()
 
-            # AUTO A CADA 20 MIN
+            # 🔁 LOOP 20 MIN
             if agora - ultimo_loop > 1200:
                 enviar_sinais()
                 ultimo_loop = agora
@@ -267,11 +267,7 @@ def main():
                 if "message" not in u:
                     continue
 
-                msg = u["message"]
-                if "text" not in msg:
-                    continue
-
-                texto = msg["text"].lower().strip()
+                texto = u["message"].get("text", "").lower().strip()
 
                 if texto.startswith("multipla"):
                     partes = texto.split()
