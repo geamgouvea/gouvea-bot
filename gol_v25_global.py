@@ -6,11 +6,13 @@ from datetime import datetime
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
+
 HEADERS = {"x-apisports-key": API_KEY}
 
 last_update_id = None
 bot_iniciado = False
 jogos_enviados = set()
+ultimo_loop = 0
 
 # ================= REQUEST =================
 def safe_request(url, params=None):
@@ -22,7 +24,7 @@ def safe_request(url, params=None):
         print("ERRO REQUEST:", e)
     return None
 
-# ================= BUSCAR TIMES =================
+# ================= BUSCAR TIME =================
 def buscar_time(nome):
     data = safe_request("https://v3.football.api-sports.io/teams", {"search": nome})
     if data and data.get("response"):
@@ -33,13 +35,13 @@ def buscar_time(nome):
 def pegar_jogos(team_id):
     data = safe_request("https://v3.football.api-sports.io/fixtures", {
         "team": team_id,
-        "last": 10
+        "last": 8
     })
     if data:
         return data.get("response", [])
     return []
 
-# ================= ANÁLISE =================
+# ================= ANÁLISE INTELIGENTE =================
 def analisar(home, away):
     home_id = buscar_time(home)
     away_id = buscar_time(away)
@@ -78,20 +80,20 @@ def analisar(home, away):
     under35 = sum(g <= 3 for g in gols) / total
     ambas = btts / total
 
-    # 🎯 LÓGICA EQUILIBRADA (NÃO TRAVA)
-    if over25 >= 0.58 and media >= 2.4:
+    # 🎯 DECISÃO EQUILIBRADA (NÃO TRAVA E NÃO FORÇA)
+    if over25 >= 0.55 and media >= 2.3:
         entrada = "Over 2.5"
         prob = over25
 
-    elif ambas >= 0.58:
+    elif ambas >= 0.55:
         entrada = "Ambas marcam"
         prob = ambas
 
-    elif over15 >= 0.68:
+    elif over15 >= 0.65:
         entrada = "Over 1.5"
         prob = over15
 
-    elif under35 >= 0.63:
+    elif under35 >= 0.60:
         entrada = "Under 3.5"
         prob = under35
 
@@ -100,16 +102,16 @@ def analisar(home, away):
 
     prob = int(prob * 100)
 
-    if prob < 70:
+    if prob < 68:  # ⚖️ mais equilibrado
         return None
 
-    forca = 10 if prob >= 85 else 9 if prob >= 80 else 8
+    forca = 10 if prob >= 85 else 9 if prob >= 78 else 8
 
     return entrada, prob, forca
 
 # ================= BUSCAR JOGOS =================
 def buscar_jogos():
-    data = safe_request("https://v3.football.api-sports.io/fixtures", {"next": 50})
+    data = safe_request("https://v3.football.api-sports.io/fixtures", {"next": 40})
     if not data:
         return []
 
@@ -148,6 +150,7 @@ def enviar(msg):
 # ================= AUTOMÁTICO =================
 def enviar_sinais():
     jogos = buscar_jogos()
+    enviados_agora = 0
 
     for home, away, hora in jogos:
         chave = f"{home}x{away}"
@@ -160,7 +163,7 @@ def enviar_sinais():
         if resultado:
             entrada, prob, forca = resultado
 
-            msg = f"""🔥 SINAL AUTOMÁTICO
+            msg = f"""🔥 SINAL
 
 ⚽ {home} x {away}
 ⏰ {hora}
@@ -172,6 +175,10 @@ def enviar_sinais():
 
             enviar(msg)
             jogos_enviados.add(chave)
+            enviados_agora += 1
+
+        if enviados_agora >= 3:  # 🔥 LIMITADOR (ANTI-SPAM)
+            break
 
 # ================= MANUAL =================
 def analise_manual(texto):
@@ -209,7 +216,7 @@ def gerar_multipla(qtd=2):
     jogos = buscar_jogos()
     picks = []
 
-    for home, away, hora in jogos:
+    for home, away, _ in jogos:
         resultado = analisar(home, away)
         if resultado:
             entrada, prob, _ = resultado
@@ -220,7 +227,7 @@ def gerar_multipla(qtd=2):
     if not picks:
         return "❌ Nenhuma múltipla forte agora"
 
-    msg = "🔥 MÚLTIPLA INTELIGENTE\n\n"
+    msg = "🔥 MÚLTIPLA\n\n"
 
     for i, (h, a, e, p) in enumerate(picks[:qtd], 1):
         msg += f"{i}️⃣ {h} x {a}\n🎯 {e} ({p}%)\n\n"
@@ -229,19 +236,17 @@ def gerar_multipla(qtd=2):
 
 # ================= MAIN =================
 def main():
-    global last_update_id, bot_iniciado
+    global last_update_id, bot_iniciado, ultimo_loop
 
     if not bot_iniciado:
         enviar("🤖 Gouvea Bet Inteligente Online!")
         bot_iniciado = True
 
-    ultimo_loop = 0
-
     while True:
         try:
             agora = time.time()
 
-            # 🔁 automático 30 min
+            # 🔁 LOOP AUTOMÁTICO (30 min)
             if agora - ultimo_loop > 1800:
                 enviar_sinais()
                 ultimo_loop = agora
