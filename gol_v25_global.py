@@ -23,7 +23,7 @@ def safe_request(url, params=None):
         print("ERRO REQUEST:", e)
     return None
 
-# 📲 ENVIAR (COM LOG)
+# 📲 ENVIAR
 def enviar(msg):
     try:
         r = requests.post(
@@ -79,10 +79,12 @@ def analisar(home, away):
 
             if g1 > 0 and g2 > 0:
                 btts += 1
+
             if g1 > g2:
                 casa += 1
             elif g2 > g1:
                 fora += 1
+
         except:
             continue
 
@@ -103,37 +105,47 @@ def analisar(home, away):
     melhor = max(stats, key=stats.get)
     prob = int(stats[melhor] * 100)
 
-    if prob < 55:  # 🔥 mais solto pra garantir envio
+    if prob < 50:  # 🔥 filtro ajustado
         return None
 
     return melhor, prob
 
-# ⚽ JOGOS (12H)
+# ⚽ BUSCAR JOGOS (HOJE + AMANHÃ)
 def buscar_jogos():
     jogos = []
-    hoje = datetime.utcnow().strftime("%Y-%m-%d")
+    datas = [
+        datetime.utcnow().strftime("%Y-%m-%d"),
+        (datetime.utcnow() + timedelta(days=1)).strftime("%Y-%m-%d")
+    ]
 
-    res = safe_request(f"https://v3.football.api-sports.io/fixtures?date={hoje}")
-    if not res:
-        return []
-
-    data = res.json()
     agora = datetime.now()
 
-    for j in data.get("response", []):
-        if j["fixture"]["status"]["short"] != "NS":
+    for data_ref in datas:
+        res = safe_request(f"https://v3.football.api-sports.io/fixtures?date={data_ref}")
+        if not res:
             continue
 
-        dt = datetime.fromisoformat(j["fixture"]["date"].replace("Z","+00:00")).astimezone()
-        diff = (dt - agora).total_seconds()
+        for j in res.json().get("response", []):
+            try:
+                if j["fixture"]["status"]["short"] != "NS":
+                    continue
 
-        if diff < 0 or diff > 43200:
-            continue
+                dt = datetime.fromisoformat(
+                    j["fixture"]["date"].replace("Z","+00:00")
+                ).astimezone()
 
-        home = j["teams"]["home"]["name"]
-        away = j["teams"]["away"]["name"]
+                diff = (dt - agora).total_seconds()
 
-        jogos.append((home, away, dt.strftime("%H:%M")))
+                if diff < 0 or diff > 86400:  # 24h
+                    continue
+
+                home = j["teams"]["home"]["name"]
+                away = j["teams"]["away"]["name"]
+
+                jogos.append((home, away, dt.strftime("%H:%M")))
+
+            except:
+                continue
 
     return jogos
 
@@ -157,7 +169,7 @@ def gerar_multipla(qtd=3):
     picks.sort(key=lambda x: x[3], reverse=True)
 
     if not picks:
-        return "⚠️ Mercado fraco agora."
+        return "⚠️ Mercado fraco no momento, poucos jogos disponíveis."
 
     picks = picks[:qtd]
 
@@ -176,7 +188,7 @@ def analisar_jogo(txt):
 
     r = analisar(home, away)
     if not r:
-        return "⚠️ Sem valor agora"
+        return "⚠️ Jogo sem valor agora"
 
     melhor, prob = r
 
@@ -193,23 +205,23 @@ def main():
     global last_update_id
 
     print("BOT ONLINE 🚀")
-
-    # 🔥 TESTE IMEDIATO
-    enviar("🚀 BOT INICIADO COM SUCESSO")
+    enviar("🚀 BOT ATIVO")
 
     ultimo = datetime.now() - timedelta(minutes=30)
 
     while True:
         try:
-            # AUTO
+            # 🔥 AUTO 30 MIN
             if (datetime.now() - ultimo).total_seconds() > 1800:
                 msg = gerar_multipla(3)
+
                 if msg not in enviados:
                     enviar(msg)
                     enviados.add(msg)
+
                 ultimo = datetime.now()
 
-            # TELEGRAM
+            # 📩 TELEGRAM
             res = requests.get(
                 f"https://api.telegram.org/bot{TOKEN}/getUpdates",
                 params={"timeout": 10, "offset": last_update_id}
@@ -224,7 +236,7 @@ def main():
                 texto = u["message"]["text"].lower().strip()
 
                 if texto == "/start":
-                    enviar("🤖 Bot ativo!\nUse:\nmultipla 3\nou\nTime x Time")
+                    enviar("🤖 Bot online!\nUse:\nmultipla 3\nou\nTime x Time")
 
                 elif texto.startswith("multipla"):
                     qtd = int(texto.split()[1]) if len(texto.split()) > 1 else 3
@@ -234,7 +246,7 @@ def main():
                     enviar(analisar_jogo(texto))
 
         except Exception as e:
-            print("ERRO LOOP:", e)
+            print("ERRO:", e)
 
         time.sleep(5)
 
