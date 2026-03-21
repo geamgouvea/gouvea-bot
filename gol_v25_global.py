@@ -27,13 +27,13 @@ def periodo_atual():
     if 12 <= h < 18: return "tarde"
     return "noite"
 
-# ⏱️ TEMPO INTELIGENTE
+# ⏱️ LIMITE INTELIGENTE
 def limite_horas():
     p = periodo_atual()
-    if p == "madrugada": return 21600   # 6h
-    if p == "manha": return 43200       # 12h
-    if p == "tarde": return 43200       # 12h
-    if p == "noite": return 28800       # 8h
+    if p == "madrugada": return 21600
+    if p == "manha": return 43200
+    if p == "tarde": return 43200
+    if p == "noite": return 28800
 
 # 🏆 LIGAS
 def nome_liga(liga, pais):
@@ -83,7 +83,7 @@ def pegar_jogos(team_id):
     except:
         return []
 
-# 🧠 ANÁLISE
+# 🧠 ANÁLISE COMPLETA
 def analisar(home, away):
     home_id = buscar_time(home)
     away_id = buscar_time(away)
@@ -95,14 +95,24 @@ def analisar(home, away):
 
     gols = []
     btts = 0
+    home_win = 0
+    away_win = 0
 
     for j in jogos:
         try:
             g1 = j["goals"]["home"]
             g2 = j["goals"]["away"]
+
             gols.append(g1 + g2)
+
             if g1 > 0 and g2 > 0:
                 btts += 1
+
+            if g1 > g2:
+                home_win += 1
+            elif g2 > g1:
+                away_win += 1
+
         except:
             continue
 
@@ -115,11 +125,23 @@ def analisar(home, away):
         "Over 1.5": sum(g >= 2 for g in gols) / total,
         "Over 2.5": sum(g >= 3 for g in gols) / total,
         "Ambas marcam": btts / total,
-        "Under 3.5": sum(g <= 3 for g in gols) / total
+        "Under 3.5": sum(g <= 3 for g in gols) / total,
+        "Casa vence": home_win / total,
+        "Fora vence": away_win / total
     }
 
-    melhor = max(stats, key=stats.get)
-    prob = int(stats[melhor] * 100)
+    # 🔥 prioridade inteligente
+    prioridade = ["Over 2.5", "Under 3.5", "Ambas marcam", "Casa vence", "Fora vence", "Over 1.5"]
+
+    melhor = None
+    maior = 0
+
+    for p in prioridade:
+        if stats[p] > maior:
+            melhor = p
+            maior = stats[p]
+
+    prob = int(maior * 100)
 
     if prob < 75:
         return None
@@ -129,7 +151,7 @@ def analisar(home, away):
     return stats, melhor, prob, forca
 
 # ⚽ BUSCAR JOGOS
-def buscar_jogos():
+def buscar_jogos(periodo=None):
     jogos = []
     hoje = datetime.utcnow().strftime("%Y-%m-%d")
 
@@ -151,6 +173,13 @@ def buscar_jogos():
         if (dt - agora).total_seconds() > limite:
             continue
 
+        hora = dt.hour
+
+        if periodo == "madrugada" and not (0 <= hora < 6): continue
+        if periodo == "manha" and not (6 <= hora < 12): continue
+        if periodo == "tarde" and not (12 <= hora < 18): continue
+        if periodo == "noite" and not (18 <= hora <= 23): continue
+
         liga = nome_liga(j["league"]["name"], j["league"]["country"])
         if not liga:
             continue
@@ -169,9 +198,9 @@ def buscar_jogos():
 
     return jogos
 
-# 🔥 MULTIPLA
+# 🔥 MULTIPLA PRO
 def gerar_multipla(qtd=3, periodo=None):
-    jogos = buscar_jogos()
+    jogos = buscar_jogos(periodo)
     picks = []
 
     for home, away, liga, data, hora, chave in jogos:
@@ -190,11 +219,42 @@ def gerar_multipla(qtd=3, periodo=None):
     if not picks:
         return "❌ Nenhuma múltipla encontrada"
 
-    msg = "🔥 GOUVEA BET – MÚLTIPLA INTELIGENTE\n\n"
+    msg = "🔥 GOUVEA BET – MÚLTIPLA PRO\n\n"
 
     for i, (h, a, e, p, hr, dt) in enumerate(picks, 1):
         msg += f"{i}️⃣ {h} x {a}\n📅 {dt}\n⏰ {hr}\n🎯 {e} ({p}%)\n\n"
 
+    return msg
+
+# 📊 ANÁLISE MANUAL
+def analisar_manual(texto):
+    try:
+        home, away = texto.split(" x ")
+    except:
+        return "Formato correto: Time A x Time B"
+
+    resultado = analisar(home.strip(), away.strip())
+
+    if not resultado:
+        return "❌ Não consegui analisar esse jogo"
+
+    stats, melhor, prob, forca = resultado
+
+    msg = f"""📊 ANÁLISE
+
+{home.title()} x {away.title()}
+
+📊 Over 1.5: {int(stats["Over 1.5"]*100)}%
+📊 Over 2.5: {int(stats["Over 2.5"]*100)}%
+📊 Ambas marcam: {int(stats["Ambas marcam"]*100)}%
+📊 Under 3.5: {int(stats["Under 3.5"]*100)}%
+📊 Casa vence: {int(stats["Casa vence"]*100)}%
+📊 Fora vence: {int(stats["Fora vence"]*100)}%
+
+🎯 Melhor: {melhor}
+📊 Probabilidade: {prob}%
+⭐ Força: {forca}/10
+"""
     return msg
 
 # 📲 ENVIAR
@@ -212,7 +272,7 @@ def enviar(msg):
 def main():
     global last_update_id
 
-    print("BOT ONLINE...")
+    print("BOT PRO ONLINE...")
 
     while True:
         try:
@@ -229,11 +289,20 @@ def main():
 
                 texto = u["message"]["text"].lower().strip()
 
+                # MULTIPLA
                 if texto.startswith("multipla"):
                     partes = texto.split()
                     qtd = int(partes[1]) if len(partes) > 1 else 3
-                    enviar(gerar_multipla(qtd))
+                    periodo = partes[2] if len(partes) > 2 else None
+                    enviar(gerar_multipla(qtd, periodo))
                     continue
+
+                # ANALISE MANUAL
+                if " x " in texto:
+                    enviar(analisar_manual(texto))
+                    continue
+
+                enviar("Use:\n- multipla 3 madrugada\n- time a x time b")
 
         except Exception as e:
             print("ERRO:", e)
