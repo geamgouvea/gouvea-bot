@@ -1,37 +1,18 @@
 import requests
 import time
-import threading
 from datetime import datetime, timedelta, timezone
-from difflib import get_close_matches
 
 # ================= CONFIG =================
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
+
 HEADERS = {"x-apisports-key": API_KEY}
 
-# ================= LIGA FORMATADA =================
-def nome_liga(liga):
-    liga = liga.lower()
-
-    if "brazil" in liga:
-        return "🇧🇷 Brasileirão"
-    elif "england" in liga:
-        return "🏴 Premier League"
-    elif "spain" in liga:
-        return "🇪🇸 La Liga"
-    elif "italy" in liga:
-        return "🇮🇹 Serie A"
-    elif "germany" in liga:
-        return "🇩🇪 Bundesliga"
-    elif "france" in liga:
-        return "🇫🇷 Ligue 1"
-    elif "japan" in liga:
-        return "🇯🇵 J-League"
-    elif "korea" in liga:
-        return "🇰🇷 K League"
-    else:
-        return f"🌍 {liga.title()}"
+last_update_id = None
+bot_iniciado = False
+jogos_enviados = set()
+ultimo_loop = 0
 
 # ================= REQUEST =================
 def safe_request(url, params=None):
@@ -60,13 +41,13 @@ def pegar_jogos(team_id):
         return data.get("response", [])
     return []
 
-# ================= ANÁLISE =================
+# ================= ANÁLISE INTELIGENTE =================
 def analisar(home, away):
     home_id = buscar_time(home)
     away_id = buscar_time(away)
 
     if not home_id or not away_id:
-        return "Over 1.5", 60, 0.10, 6
+        return None
 
     jogos = pegar_jogos(home_id) + pegar_jogos(away_id)
 
@@ -81,69 +62,83 @@ def analisar(home, away):
             if g1 is None or g2 is None:
                 continue
 
-            gols.append(g1 + g2)
+            total = g1 + g2
+            gols.append(total)
 
             if g1 > 0 and g2 > 0:
                 btts += 1
         except:
             continue
 
-    if len(gols) < 5:
-        return "Over 1.5", 60, 0.10, 6
+    if len(gols) < 6:
+        return None
 
-    total = len(gols)
+    total_jogos = len(gols)
 
-    over15 = sum(g >= 2 for g in gols) / total
-    over25 = sum(g >= 3 for g in gols) / total
-    ambas = btts / total
-    under35 = sum(g <= 3 for g in gols) / total
+    media = sum(gols) / total_jogos
+    over15 = sum(g >= 2 for g in gols) / total_jogos
+    over25 = sum(g >= 3 for g in gols) / total_jogos
+    over35 = sum(g >= 4 for g in gols) / total_jogos
+    under35 = sum(g <= 3 for g in gols) / total_jogos
+    btts_rate = btts / total_jogos
 
-    if over15 >= 0.60:
-        return "Over 1.5", int(over15*100), 0.15, 7
+    # 🔥 PRIORIDADE INTELIGENTE
+    if over25 >= 0.65 and media >= 2.5:
+        entrada = "Over 2.5"
+        prob = over25
 
-    elif over25 >= 0.50:
-        return "Over 2.5", int(over25*100), 0.20, 7
+    elif btts_rate >= 0.60:
+        entrada = "Ambas marcam"
+        prob = btts_rate
 
-    elif ambas >= 0.50:
-        return "Ambas marcam", int(ambas*100), 0.15, 7
+    elif over15 >= 0.75:
+        entrada = "Over 1.5"
+        prob = over15
 
-    elif under35 >= 0.60:
-        return "Under 3.5", int(under35*100), 0.12, 6
+    elif under35 >= 0.65:
+        entrada = "Under 3.5"
+        prob = under35
 
     else:
-        return "Jogo equilibrado", 55, 0.05, 5
+        return None
 
-# ================= MÚLTIPLA =================
-def gerar_multipla(qtd=2):
-    data = safe_request("https://v3.football.api-sports.io/fixtures", {"next": 40})
+    prob = int(prob * 100)
 
+    if prob < 70:
+        return None
+
+    forca = 10 if prob >= 85 else 9 if prob >= 78 else 7
+
+    return entrada, prob, forca
+
+# ================= BUSCAR JOGOS =================
+def buscar_jogos():
+    data = safe_request("https://v3.football.api-sports.io/fixtures", {"next": 30})
     if not data:
-        return "❌ Erro ao buscar jogos"
+        return []
 
-    picks = []
+    jogos = []
+    agora = datetime.utcnow()
 
     for j in data.get("response", []):
+        if j["fixture"]["status"]["short"] != "NS":
+            continue
+
+        dt = datetime.fromisoformat(j["fixture"]["date"].replace("Z","+00:00"))
+        diff = (dt - agora).total_seconds()
+
+        if diff < 0 or diff > 43200:
+            continue
+
         home = j["teams"]["home"]["name"]
         away = j["teams"]["away"]["name"]
+        hora = dt.strftime("%H:%M")
 
-        entrada, prob, ev, forca = analisar(home, away)
+        jogos.append((home, away, hora))
 
-        if forca >= 6:
-            picks.append((home, away, entrada, prob))
+    return jogos
 
-    picks.sort(key=lambda x: x[3], reverse=True)
-
-    if not picks:
-        return "❌ Nenhuma múltipla encontrada"
-
-    msg = "🔥 MÚLTIPLA DO DIA\n\n"
-
-    for i, (h, a, e, p) in enumerate(picks[:qtd], 1):
-        msg += f"{i}️⃣ {h} x {a}\n🎯 {e} ({p}%)\n\n"
-
-    return msg
-
-# ================= TELEGRAM =================
+# ================= ENVIAR =================
 def enviar(msg):
     try:
         requests.post(
@@ -154,102 +149,141 @@ def enviar(msg):
     except:
         pass
 
-def ler(offset=None):
-    params = {"timeout": 10}
-    if offset:
-        params["offset"] = offset
-
-    res = requests.get(
-        f"https://api.telegram.org/bot{TOKEN}/getUpdates",
-        params=params
-    ).json()
-
-    return res.get("result", [])
-
 # ================= AUTOMÁTICO =================
-def modo_automatico():
+def enviar_sinais():
+    jogos = buscar_jogos()
+    enviados_agora = 0
+
+    for home, away, hora in jogos:
+        chave = f"{home}x{away}"
+
+        if chave in jogos_enviados:
+            continue
+
+        resultado = analisar(home, away)
+
+        if resultado:
+            entrada, prob, forca = resultado
+
+            msg = f"""🔥 SINAL AUTOMÁTICO
+
+⚽ {home} x {away}
+⏰ {hora}
+
+🎯 {entrada}
+📊 {prob}%
+🔥 Força: {forca}/10
+"""
+
+            enviar(msg)
+            jogos_enviados.add(chave)
+            enviados_agora += 1
+
+        if enviados_agora >= 3:
+            break
+
+# ================= MANUAL =================
+def analise_manual(texto):
+    if "x" not in texto:
+        enviar("Formato: Time A x Time B")
+        return
+
+    try:
+        home, away = texto.split("x")
+        home = home.strip()
+        away = away.strip()
+    except:
+        return
+
+    resultado = analisar(home, away)
+
+    if not resultado:
+        enviar("⚠️ Mercado sem valor agora")
+        return
+
+    entrada, prob, forca = resultado
+
+    msg = f"""🔍 ANÁLISE
+
+⚽ {home} x {away}
+
+🎯 Melhor entrada: {entrada}
+📊 {prob}%
+🔥 Força: {forca}/10
+"""
+
+    enviar(msg)
+
+# ================= MÚLTIPLA =================
+def gerar_multipla(qtd=3):
+    jogos = buscar_jogos()
+    picks = []
+
+    for home, away, _ in jogos:
+        resultado = analisar(home, away)
+        if resultado:
+            entrada, prob, forca = resultado
+
+            if forca >= 7:
+                picks.append((home, away, entrada, prob))
+
+    picks.sort(key=lambda x: x[3], reverse=True)
+
+    if len(picks) < 2:
+        return "❌ Sem múltipla forte agora"
+
+    msg = "🔥 MÚLTIPLA INTELIGENTE\n\n"
+
+    for i, (h, a, e, p) in enumerate(picks[:qtd], 1):
+        msg += f"{i}️⃣ {h} x {a}\n🎯 {e} ({p}%)\n\n"
+
+    return msg
+
+# ================= MAIN =================
+def main():
+    global last_update_id, bot_iniciado, ultimo_loop
+
+    if not bot_iniciado:
+        enviar("🤖 Gouvea Bet Inteligente Online!")
+        bot_iniciado = True
+
     while True:
         try:
-            data = safe_request("https://v3.football.api-sports.io/fixtures", {"next": 40})
+            agora = time.time()
 
-            enviados = 0
+            # AUTO A CADA 20 MIN
+            if agora - ultimo_loop > 1200:
+                enviar_sinais()
+                ultimo_loop = agora
 
-            for j in data.get("response", []):
-                if enviados >= 2:
-                    break
+            res = requests.get(
+                f"https://api.telegram.org/bot{TOKEN}/getUpdates",
+                params={"timeout": 10, "offset": last_update_id}
+            ).json()
 
-                home = j["teams"]["home"]["name"]
-                away = j["teams"]["away"]["name"]
-                liga = j["league"]["name"]
-                hora = j["fixture"]["date"]
+            for u in res.get("result", []):
+                last_update_id = u["update_id"] + 1
 
-                entrada, prob, ev, forca = analisar(home, away)
+                if "message" not in u:
+                    continue
 
-                if forca >= 6 and prob >= 60:
-                    dt = datetime.fromisoformat(hora.replace("Z","+00:00"))
+                msg = u["message"]
+                if "text" not in msg:
+                    continue
 
-                    msg = f"""🔥 SINAL AUTOMÁTICO
+                texto = msg["text"].lower().strip()
 
-⚽ {home} x {away}
-🏆 {nome_liga(liga)}
-
-🎯 {entrada}
-📊 {prob}%
-⭐ {forca}/10"""
-
-                    enviar(msg)
-                    enviados += 1
-
-            time.sleep(1800)
-
-        except Exception as e:
-            print("Erro auto:", e)
-            time.sleep(60)
-
-# ================= BOT =================
-def main():
-    enviar("🤖 Gouvea Bet Inteligente Online!")
-
-    last = None
-
-    while True:
-        updates = ler(last)
-
-        for u in updates:
-            last = u["update_id"] + 1
-
-            try:
-                texto = u["message"]["text"].lower().strip()
-
-                # 🔥 MÚLTIPLA
                 if texto.startswith("multipla"):
                     partes = texto.split()
-                    qtd = int(partes[1]) if len(partes) > 1 else 2
+                    qtd = int(partes[1]) if len(partes) > 1 else 3
                     enviar(gerar_multipla(qtd))
-                    continue
+                else:
+                    analise_manual(texto)
 
-                # 🔍 ANÁLISE
-                if " x " not in texto:
-                    enviar("Formato: Time A x Time B")
-                    continue
+        except:
+            pass
 
-                home, away = texto.split(" x ")
-
-                entrada, prob, ev, forca = analisar(home, away)
-
-                enviar(f"""🔍 ANÁLISE
-
-⚽ {home} x {away}
-
-🎯 {entrada}
-📊 {prob}%
-⭐ {forca}/10""")
-
-            except Exception as e:
-                print("Erro:", e)
-
-        time.sleep(2)
+        time.sleep(5)
 
 if __name__ == "__main__":
-    threading.Thread(target=modo_automatico).start()
     main()
