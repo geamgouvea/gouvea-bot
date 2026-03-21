@@ -41,7 +41,7 @@ def pegar_jogos(team_id):
         return data.get("response", [])
     return []
 
-# ================= ANÁLISE INTELIGENTE =================
+# ================= ANÁLISE =================
 def analisar(home, away):
     home_id = buscar_time(home)
     away_id = buscar_time(away)
@@ -49,15 +49,14 @@ def analisar(home, away):
     if not home_id or not away_id:
         return None
 
-    jogos_home = pegar_jogos(home_id)
-    jogos_away = pegar_jogos(away_id)
+    jogos = pegar_jogos(home_id) + pegar_jogos(away_id)
 
     gols = []
     btts = 0
-    vitorias_home = 0
-    vitorias_away = 0
+    win_home = 0
+    win_away = 0
 
-    for j in jogos_home + jogos_away:
+    for j in jogos:
         try:
             g1 = j["goals"]["home"]
             g2 = j["goals"]["away"]
@@ -71,9 +70,9 @@ def analisar(home, away):
                 btts += 1
 
             if g1 > g2:
-                vitorias_home += 1
+                win_home += 1
             elif g2 > g1:
-                vitorias_away += 1
+                win_away += 1
 
         except:
             continue
@@ -88,13 +87,13 @@ def analisar(home, away):
     under35 = sum(g <= 3 for g in gols) / total
     ambas = btts / total
 
-    win_home = vitorias_home / total
-    win_away = vitorias_away / total
+    win_home = win_home / total
+    win_away = win_away / total
 
-    # 🎯 DECISÃO INTELIGENTE
     entrada = None
     prob = 0
 
+    # PRIORIDADE INTELIGENTE
     if win_home >= 0.55:
         entrada = "Casa vence"
         prob = win_home
@@ -111,7 +110,7 @@ def analisar(home, away):
         entrada = "Ambas marcam"
         prob = ambas
 
-    elif over15 >= 0.65:
+    elif over15 >= 0.60:
         entrada = "Over 1.5"
         prob = over15
 
@@ -124,7 +123,7 @@ def analisar(home, away):
 
     prob = int(prob * 100)
 
-    if prob < 70:
+    if prob < 65:
         return None
 
     forca = 10 if prob >= 85 else 9 if prob >= 78 else 8
@@ -204,14 +203,17 @@ def analise_manual(texto):
     if "x" not in texto:
         return
 
-    home, away = texto.split("x")
-    home = home.strip()
-    away = away.strip()
+    try:
+        home, away = texto.split("x")
+        home = home.strip()
+        away = away.strip()
+    except:
+        return
 
     resultado = analisar(home, away)
 
     if not resultado:
-        enviar("⚠️ Sem valor agora (ou poucos dados)")
+        enviar("⚠️ Mercado equilibrado no momento")
         return
 
     entrada, prob, forca = resultado
@@ -234,7 +236,7 @@ def gerar_multipla(qtd=2):
         r = analisar(home, away)
         if r:
             entrada, prob, _ = r
-            if prob >= 75:
+            if prob >= 70:
                 picks.append((home, away, entrada, prob))
 
     picks.sort(key=lambda x: x[3], reverse=True)
@@ -261,7 +263,7 @@ def main():
         try:
             agora = time.time()
 
-            # 🔁 LOOP 30 MIN
+            # LOOP AUTOMÁTICO 30 MIN
             if agora - ultimo_loop > 1800:
                 enviar_sinais()
                 ultimo_loop = agora
@@ -277,10 +279,11 @@ def main():
                 if "message" not in u:
                     continue
 
-                texto = u["message"].get("text", "").lower()
+                texto = u["message"].get("text", "").lower().strip()
 
                 if texto.startswith("multipla"):
-                    qtd = int(texto.split()[1]) if len(texto.split()) > 1 else 2
+                    partes = texto.split()
+                    qtd = int(partes[1]) if len(partes) > 1 else 2
                     enviar(gerar_multipla(qtd))
                 else:
                     analise_manual(texto)
