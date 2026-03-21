@@ -12,7 +12,7 @@ HEADERS = {"x-apisports-key": API_KEY}
 last_update_id = None
 bot_iniciado = False
 jogos_enviados = set()
-ultimo_loop = 0
+ultimo_loop = time.time()
 
 # ================= REQUEST =================
 def safe_request(url, params=None):
@@ -20,8 +20,8 @@ def safe_request(url, params=None):
         r = requests.get(url, headers=HEADERS, params=params, timeout=10)
         if r.status_code == 200:
             return r.json()
-    except Exception as e:
-        print("ERRO REQUEST:", e)
+    except:
+        return None
     return None
 
 # ================= BUSCAR TIME =================
@@ -35,7 +35,7 @@ def buscar_time(nome):
 def pegar_jogos(team_id):
     data = safe_request("https://v3.football.api-sports.io/fixtures", {
         "team": team_id,
-        "last": 8
+        "last": 10
     })
     if data:
         return data.get("response", [])
@@ -49,12 +49,15 @@ def analisar(home, away):
     if not home_id or not away_id:
         return None
 
-    jogos = pegar_jogos(home_id) + pegar_jogos(away_id)
+    jogos_home = pegar_jogos(home_id)
+    jogos_away = pegar_jogos(away_id)
 
     gols = []
     btts = 0
+    vitorias_home = 0
+    vitorias_away = 0
 
-    for j in jogos:
+    for j in jogos_home + jogos_away:
         try:
             g1 = j["goals"]["home"]
             g2 = j["goals"]["away"]
@@ -66,22 +69,41 @@ def analisar(home, away):
 
             if g1 > 0 and g2 > 0:
                 btts += 1
+
+            if g1 > g2:
+                vitorias_home += 1
+            elif g2 > g1:
+                vitorias_away += 1
+
         except:
             continue
 
-    if len(gols) < 5:
+    if len(gols) < 6:
         return None
 
     total = len(gols)
-    media = sum(gols) / total
 
     over15 = sum(g >= 2 for g in gols) / total
     over25 = sum(g >= 3 for g in gols) / total
     under35 = sum(g <= 3 for g in gols) / total
     ambas = btts / total
 
-    # 🎯 DECISÃO EQUILIBRADA (NÃO TRAVA E NÃO FORÇA)
-    if over25 >= 0.55 and media >= 2.3:
+    win_home = vitorias_home / total
+    win_away = vitorias_away / total
+
+    # 🎯 DECISÃO INTELIGENTE
+    entrada = None
+    prob = 0
+
+    if win_home >= 0.55:
+        entrada = "Casa vence"
+        prob = win_home
+
+    elif win_away >= 0.55:
+        entrada = "Fora vence"
+        prob = win_away
+
+    elif over25 >= 0.55:
         entrada = "Over 2.5"
         prob = over25
 
@@ -97,12 +119,12 @@ def analisar(home, away):
         entrada = "Under 3.5"
         prob = under35
 
-    else:
+    if not entrada:
         return None
 
     prob = int(prob * 100)
 
-    if prob < 68:  # ⚖️ mais equilibrado
+    if prob < 70:
         return None
 
     forca = 10 if prob >= 85 else 9 if prob >= 78 else 8
@@ -125,14 +147,11 @@ def buscar_jogos():
         dt = datetime.fromisoformat(j["fixture"]["date"].replace("Z","+00:00"))
         diff = (dt - agora).total_seconds()
 
-        if diff < 0 or diff > 43200:
-            continue
-
-        home = j["teams"]["home"]["name"]
-        away = j["teams"]["away"]["name"]
-        hora = dt.strftime("%H:%M")
-
-        jogos.append((home, away, hora))
+        if 0 < diff <= 43200:
+            home = j["teams"]["home"]["name"]
+            away = j["teams"]["away"]["name"]
+            hora = dt.strftime("%H:%M")
+            jogos.append((home, away, hora))
 
     return jogos
 
@@ -144,13 +163,13 @@ def enviar(msg):
             data={"chat_id": CHAT_ID, "text": msg},
             timeout=10
         )
-    except Exception as e:
-        print("ERRO ENVIO:", e)
+    except:
+        pass
 
 # ================= AUTOMÁTICO =================
 def enviar_sinais():
     jogos = buscar_jogos()
-    enviados_agora = 0
+    enviados = 0
 
     for home, away, hora in jogos:
         chave = f"{home}x{away}"
@@ -175,9 +194,9 @@ def enviar_sinais():
 
             enviar(msg)
             jogos_enviados.add(chave)
-            enviados_agora += 1
+            enviados += 1
 
-        if enviados_agora >= 3:  # 🔥 LIMITADOR (ANTI-SPAM)
+        if enviados >= 2:
             break
 
 # ================= MANUAL =================
@@ -185,31 +204,26 @@ def analise_manual(texto):
     if "x" not in texto:
         return
 
-    try:
-        partes = texto.split("x")
-        home = partes[0].strip()
-        away = partes[1].strip()
-    except:
-        return
+    home, away = texto.split("x")
+    home = home.strip()
+    away = away.strip()
 
     resultado = analisar(home, away)
 
     if not resultado:
-        enviar("⚠️ Jogo sem valor agora")
+        enviar("⚠️ Sem valor agora (ou poucos dados)")
         return
 
     entrada, prob, forca = resultado
 
-    msg = f"""🔍 ANÁLISE
+    enviar(f"""🔍 ANÁLISE
 
 ⚽ {home} x {away}
 
 🎯 Melhor entrada: {entrada}
 📊 {prob}%
 🔥 Força: {forca}/10
-"""
-
-    enviar(msg)
+""")
 
 # ================= MÚLTIPLA =================
 def gerar_multipla(qtd=2):
@@ -217,15 +231,16 @@ def gerar_multipla(qtd=2):
     picks = []
 
     for home, away, _ in jogos:
-        resultado = analisar(home, away)
-        if resultado:
-            entrada, prob, _ = resultado
-            picks.append((home, away, entrada, prob))
+        r = analisar(home, away)
+        if r:
+            entrada, prob, _ = r
+            if prob >= 75:
+                picks.append((home, away, entrada, prob))
 
     picks.sort(key=lambda x: x[3], reverse=True)
 
-    if not picks:
-        return "❌ Nenhuma múltipla forte agora"
+    if len(picks) < qtd:
+        return "❌ Sem múltipla forte agora"
 
     msg = "🔥 MÚLTIPLA\n\n"
 
@@ -246,7 +261,7 @@ def main():
         try:
             agora = time.time()
 
-            # 🔁 LOOP AUTOMÁTICO (30 min)
+            # 🔁 LOOP 30 MIN
             if agora - ultimo_loop > 1800:
                 enviar_sinais()
                 ultimo_loop = agora
@@ -262,22 +277,16 @@ def main():
                 if "message" not in u:
                     continue
 
-                msg = u["message"]
-
-                if "text" not in msg:
-                    continue
-
-                texto = msg["text"].lower().strip()
+                texto = u["message"].get("text", "").lower()
 
                 if texto.startswith("multipla"):
-                    partes = texto.split()
-                    qtd = int(partes[1]) if len(partes) > 1 else 2
+                    qtd = int(texto.split()[1]) if len(texto.split()) > 1 else 2
                     enviar(gerar_multipla(qtd))
                 else:
                     analise_manual(texto)
 
         except Exception as e:
-            print("ERRO LOOP:", e)
+            print("ERRO:", e)
 
         time.sleep(5)
 
