@@ -7,7 +7,6 @@ import unicodedata
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
-
 HEADERS = {"x-apisports-key": API_KEY}
 
 last_update_id = None
@@ -27,23 +26,12 @@ def request(url, params=None):
         if r.status_code == 200:
             return r.json()
     except:
-        pass
+        return None
     return None
 
 # ================= BUSCAR TIME =================
 def buscar_time(nome):
     nome = normalizar(nome)
-
-    mapa = {
-        "inter": "Inter",
-        "inter milao": "Inter",
-        "psg": "Paris Saint Germain",
-        "man united": "Manchester United",
-        "flamengo": "Flamengo",
-        "corinthians": "Corinthians"
-    }
-
-    nome = mapa.get(nome, nome)
 
     data = request("https://v3.football.api-sports.io/teams", {"search": nome})
 
@@ -75,7 +63,6 @@ def pegar_odds(fixture_id):
     try:
         for book in data["response"][0]["bookmakers"]:
             for bet in book["bets"]:
-
                 if bet["name"] == "Goals Over/Under":
                     for v in bet["values"]:
                         odds[v["value"]] = float(v["odd"])
@@ -88,8 +75,8 @@ def pegar_odds(fixture_id):
 
     return odds
 
-# ================= PROBABILIDADES =================
-def calcular_prob(jogos):
+# ================= CALCULO =================
+def calcular(jogos):
     gols = []
     btts = 0
 
@@ -109,7 +96,7 @@ def calcular_prob(jogos):
         except:
             continue
 
-    if not gols:
+    if len(gols) < 5:
         return None
 
     total = len(gols)
@@ -147,35 +134,38 @@ def analisar_auto(fixture):
             return None
 
         jogos = pegar_jogos(home_id) + pegar_jogos(away_id)
+        prob = calcular(jogos)
 
-        if len(jogos) < 6:
-            return None
-
-        prob = calcular_prob(jogos)
         if not prob:
             return None
 
         odds = pegar_odds(fixture_id)
 
-        opcoes = []
-
         mercados = {
             "Over 1.5": prob["over15"],
             "Over 2.5": prob["over25"],
             "Under 2.5": prob["under25"],
-            "BTTS Yes": prob["btts"]
+            "BTTS": prob["btts"]
         }
+
+        opcoes_valor = []
+        opcoes_simples = []
 
         for mercado, p in mercados.items():
             odd = odds.get(mercado)
 
-            if odd and p >= 0.58 and tem_valor(p, odd):
-                opcoes.append((mercado, p))
+            opcoes_simples.append((mercado, p))
 
-        if not opcoes:
-            return None
+            if odd and p >= 0.55 and tem_valor(p, odd):
+                opcoes_valor.append((mercado, p))
 
-        melhor = max(opcoes, key=lambda x: x[1])
+        if opcoes_valor:
+            melhor = max(opcoes_valor, key=lambda x: x[1])
+            tipo = "🔥 VALOR"
+        else:
+            melhor = max(opcoes_simples, key=lambda x: x[1])
+            tipo = "⚠️ PROVÁVEL"
+
         prob_final = int(melhor[1] * 100)
 
         return {
@@ -184,7 +174,8 @@ def analisar_auto(fixture):
             "liga": liga,
             "hora": hora,
             "entrada": melhor[0],
-            "prob": prob_final
+            "prob": prob_final,
+            "tipo": tipo
         }
 
     except:
@@ -209,51 +200,27 @@ def analisar_manual(texto):
         return "❌ Times não encontrados"
 
     jogos = pegar_jogos(home_id) + pegar_jogos(away_id)
+    prob = calcular(jogos)
 
-    gols = []
-    btts = 0
-
-    for j in jogos:
-        try:
-            g1 = j["goals"]["home"]
-            g2 = j["goals"]["away"]
-
-            if g1 is None or g2 is None:
-                continue
-
-            gols.append(g1 + g2)
-
-            if g1 > 0 and g2 > 0:
-                btts += 1
-        except:
-            continue
-
-    total = len(gols)
-
-    if total < 5:
-        return "⚠️ Poucos dados"
-
-    prob_over25 = sum(g >= 3 for g in gols) / total
-    prob_over15 = min(0.90, prob_over25 + 0.25)
-    prob_btts = btts / total
-    prob_under25 = 1 - prob_over25
+    if not prob:
+        return f"⚠️ {home} x {away}\nPoucos dados"
 
     opcoes = [
-        ("Over 2.5", prob_over25),
-        ("Over 1.5", prob_over15),
-        ("Ambas marcam", prob_btts),
-        ("Under 2.5", prob_under25)
+        ("Over 2.5", prob["over25"]),
+        ("Over 1.5", prob["over15"]),
+        ("Ambas marcam", prob["btts"]),
+        ("Under 2.5", prob["under25"])
     ]
 
-    entrada, prob = max(opcoes, key=lambda x: x[1])
-    prob = int(prob * 100)
+    entrada, p = max(opcoes, key=lambda x: x[1])
+    p = int(p * 100)
 
     return f"""🔍 ANÁLISE
 
 ⚽ {home} x {away}
 
 🎯 Melhor entrada: {entrada}
-📊 Probabilidade: {prob}%"""
+📊 Probabilidade: {p}%"""
 
 # ================= BUSCAR JOGOS =================
 def buscar_jogos():
@@ -296,18 +263,24 @@ def gerar_multipla(qtd=3):
 
     for j in jogos:
         r = analisar_auto(j)
-        if r:
+        if r and r["prob"] >= 60:
             picks.append(r)
 
     picks.sort(key=lambda x: x["prob"], reverse=True)
 
-    if len(picks) < qtd:
+    if len(picks) < 2:
         return "⚠️ Poucas oportunidades agora"
 
     msg = "🔥 MÚLTIPLA ELITE\n\n"
 
     for i, p in enumerate(picks[:qtd], 1):
-        msg += f"{i}️⃣ {p['home']} x {p['away']}\n🏆 {p['liga']}\n⏰ {p['hora']}\n🎯 {p['entrada']} ({p['prob']}%)\n\n"
+        msg += f"""{i}️⃣ {p['home']} x {p['away']}
+🏆 {p['liga']}
+⏰ {p['hora']}
+🎯 {p['entrada']}
+📊 {p['prob']}% {p['tipo']}
+
+"""
 
     return msg
 
@@ -335,7 +308,7 @@ def auto():
 ⏰ {r['hora']}
 
 🎯 {r['entrada']}
-📊 {r['prob']}%"""
+📊 {r['prob']}% {r['tipo']}"""
 
             enviar(msg)
             jogos_enviados.add(fid)
