@@ -1,6 +1,6 @@
 import requests
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import unicodedata
 
 # ================= CONFIG =================
@@ -9,21 +9,18 @@ CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
 HEADERS = {"x-apisports-key": API_KEY}
 
-MODO_TESTE = True
-INTERVALO = 60 if MODO_TESTE else 1800
-
 last_update_id = None
 jogos_enviados = set()
 
 # ================= NORMALIZAR =================
-def normalizar_nome(nome):
+def normalizar(nome):
     nome = nome.lower().strip()
     nome = unicodedata.normalize('NFKD', nome)
     nome = nome.encode('ASCII', 'ignore').decode('ASCII')
     return nome
 
 # ================= REQUEST =================
-def safe_request(url, params=None):
+def request(url, params=None):
     try:
         r = requests.get(url, headers=HEADERS, params=params, timeout=10)
         if r.status_code == 200:
@@ -34,49 +31,106 @@ def safe_request(url, params=None):
 
 # ================= BUSCAR TIME =================
 def buscar_time(nome):
-    nome = normalizar_nome(nome)
+    nome = normalizar(nome)
 
-    data = safe_request(
-        "https://v3.football.api-sports.io/teams",
-        {"search": nome}
-    )
+    mapa = {
+        "inter": "Inter",
+        "inter milao": "Inter",
+        "internazionale": "Inter",
+        "man united": "Manchester United",
+        "psg": "Paris Saint Germain"
+    }
+
+    nome = mapa.get(nome, nome)
+
+    data = request("https://v3.football.api-sports.io/teams", {"search": nome})
 
     if data and data.get("response"):
         return data["response"][0]["team"]["id"]
-
     return None
 
-# ================= HISTÓRICO =================
+# ================= PEGAR JOGOS =================
 def pegar_jogos(team_id):
-    data = safe_request("https://v3.football.api-sports.io/fixtures", {
+    data = request("https://v3.football.api-sports.io/fixtures", {
         "team": team_id,
         "last": 10
     })
-    return data.get("response", []) if data else []
+    if data:
+        return data.get("response", [])
+    return []
 
-# ================= LIGA =================
-def liga_valida(nome):
-    nome = nome.lower()
+# ================= PEGAR ODDS =================
+def pegar_odds(fixture_id):
+    data = request("https://v3.football.api-sports.io/odds", {
+        "fixture": fixture_id
+    })
 
-    boas = ["premier", "la liga", "serie a", "bundesliga", "ligue 1", "brasileiro"]
-    ruins = ["friendly", "amistoso", "youth", "u17", "u20", "u23", "women"]
+    odds = {}
 
-    if any(r in nome for r in ruins):
-        return False
+    if not data or not data.get("response"):
+        return odds
 
-    return any(b in nome for b in boas)
+    try:
+        for book in data["response"][0]["bookmakers"]:
+            for bet in book["bets"]:
+
+                if bet["name"] == "Goals Over/Under":
+                    for v in bet["values"]:
+                        odds[v["value"]] = float(v["odd"])
+
+                if bet["name"] == "Both Teams Score":
+                    for v in bet["values"]:
+                        odds[v["value"]] = float(v["odd"])
+
+    except:
+        pass
+
+    return odds
+
+# ================= CALCULO =================
+def calcular_prob(jogos):
+    gols = []
+    btts = 0
+
+    for j in jogos:
+        try:
+            g1 = j["goals"]["home"]
+            g2 = j["goals"]["away"]
+
+            if g1 is None or g2 is None:
+                continue
+
+            total = g1 + g2
+            gols.append(total)
+
+            if g1 > 0 and g2 > 0:
+                btts += 1
+        except:
+            continue
+
+    if not gols:
+        return None
+
+    total = len(gols)
+
+    return {
+        "over15": sum(g >= 2 for g in gols) / total,
+        "over25": sum(g >= 3 for g in gols) / total,
+        "under25": sum(g <= 2 for g in gols) / total,
+        "btts": btts / total
+    }
 
 # ================= ANALISE =================
-def analisar(fixture):
+def analisar_jogo(fixture):
     try:
         home = fixture["teams"]["home"]["name"]
         away = fixture["teams"]["away"]["name"]
         liga = fixture["league"]["name"]
-        horario = fixture["fixture"]["date"]
+        data_jogo = fixture["fixture"]["date"]
         fixture_id = fixture["fixture"]["id"]
 
-        if not liga_valida(liga):
-            return None
+        dt = datetime.fromisoformat(data_jogo.replace("Z","+00:00"))
+        hora = dt.strftime("%H:%M")
 
         home_id = buscar_time(home)
         away_id = buscar_time(away)
@@ -86,60 +140,51 @@ def analisar(fixture):
 
         jogos = pegar_jogos(home_id) + pegar_jogos(away_id)
 
-        gols = []
-        btts = 0
-
-        for j in jogos:
-            g1 = j["goals"]["home"]
-            g2 = j["goals"]["away"]
-
-            if g1 is None or g2 is None:
-                continue
-
-            gols.append(g1 + g2)
-
-            if g1 > 0 and g2 > 0:
-                btts += 1
-
-        if len(gols) < 8:
+        if len(jogos) < 6:
             return None
 
-        total = len(gols)
-
-        prob_over25 = sum(g >= 3 for g in gols) / total
-        prob_btts = btts / total
-        prob_over15 = min(0.90, prob_over25 + 0.20)
-
-        opcoes = [
-            ("Over 2.5", prob_over25),
-            ("Ambas marcam", prob_btts),
-            ("Over 1.5", prob_over15)
-        ]
-
-        melhor = max(opcoes, key=lambda x: x[1])
-
-        prob = int(melhor[1] * 100)
-
-        # 🔥 AJUSTES PROFISSIONAIS
-        prob = min(prob, 85)
-
-        if prob < 60:
+        prob = calcular_prob(jogos)
+        if not prob:
             return None
 
-        forca = 10 if prob >= 80 else 9 if prob >= 72 else 8 if prob >= 65 else 7
+        odds = pegar_odds(fixture_id)
 
-        horario_formatado = datetime.fromisoformat(
-            horario.replace("Z","+00:00")
-        ).strftime("%d/%m %H:%M")
+        oportunidades = []
 
-        return home, away, melhor[0], prob, forca, liga, horario_formatado, fixture_id
+        mercados = {
+            "Over 1.5": prob["over15"],
+            "Over 2.5": prob["over25"],
+            "Under 2.5": prob["under25"],
+            "BTTS Yes": prob["btts"]
+        }
+
+        for mercado, p in mercados.items():
+            odd = odds.get(mercado)
+            if odd and p > 0.60 and odd > (1 / p):
+                oportunidades.append((mercado, p))
+
+        if not oportunidades:
+            return None
+
+        melhor = max(oportunidades, key=lambda x: x[1])
+
+        prob_final = int(melhor[1] * 100)
+
+        return {
+            "home": home,
+            "away": away,
+            "liga": liga,
+            "hora": hora,
+            "entrada": melhor[0],
+            "prob": prob_final
+        }
 
     except:
         return None
 
 # ================= BUSCAR JOGOS =================
 def buscar_jogos():
-    data = safe_request("https://v3.football.api-sports.io/fixtures", {"next": 30})
+    data = request("https://v3.football.api-sports.io/fixtures", {"next": 50})
     if not data:
         return []
 
@@ -148,120 +193,104 @@ def buscar_jogos():
 
     for j in data.get("response", []):
         try:
-            if j["fixture"]["status"]["short"] != "NS":
-                continue
-
             dt = datetime.fromisoformat(j["fixture"]["date"].replace("Z","+00:00"))
             diff = (dt - agora).total_seconds()
 
-            if 0 < diff < 43200:
+            if 0 < diff < 43200:  # 12h
                 jogos.append(j)
         except:
             continue
 
     return jogos
 
-# ================= ENVIO =================
+# ================= ENVIAR =================
 def enviar(msg):
-    requests.post(
-        f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-        data={"chat_id": CHAT_ID, "text": msg}
-    )
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+            data={"chat_id": CHAT_ID, "text": msg}
+        )
+    except:
+        pass
 
-# ================= AUTOMÁTICO =================
-def enviar_sinais_automaticos():
-    global jogos_enviados
-
+# ================= AUTO =================
+def auto():
     jogos = buscar_jogos()
+
     sinais = []
 
     for j in jogos:
-        resultado = analisar(j)
+        resultado = analisar_jogo(j)
 
         if resultado:
-            home, away, entrada, prob, forca, liga, horario, fixture_id = resultado
+            key = f"{resultado['home']}x{resultado['away']}"
 
-            if fixture_id not in jogos_enviados:
+            if key not in jogos_enviados:
+                jogos_enviados.add(key)
                 sinais.append(resultado)
 
-    sinais.sort(key=lambda x: x[3], reverse=True)
-    sinais = sinais[:5]
+    sinais = sorted(sinais, key=lambda x: x["prob"], reverse=True)
 
-    if not sinais:
-        return
+    for s in sinais[:5]:
+        msg = f"""🔥 SINAL ELITE
 
-    msg = "🔥 SINAIS AUTOMÁTICOS\n\n"
+⚽ {s['home']} x {s['away']}
+🏆 {s['liga']}
+⏰ {s['hora']}
 
-    for s in sinais:
-        home, away, entrada, prob, forca, liga, horario, fixture_id = s
-
-        msg += f"""⚽ {home} x {away}
-🏆 {liga}
-⏰ {horario}
-🎯 {entrada}
-📊 {prob}%
-⭐ {forca}/10
-
+🎯 {s['entrada']}
+📊 {s['prob']}%
 """
-
-        jogos_enviados.add(fixture_id)
-
-    enviar(msg)
+        enviar(msg)
 
 # ================= MANUAL =================
-def analise_manual(texto):
+def manual(texto):
     try:
         home, away = texto.split("x")
+        home = home.strip()
+        away = away.strip()
 
-        home_id = buscar_time(home)
-        away_id = buscar_time(away)
+        fake_fixture = {
+            "teams": {
+                "home": {"name": home},
+                "away": {"name": away}
+            },
+            "league": {"name": "Manual"},
+            "fixture": {"id": 0, "date": datetime.utcnow().isoformat()}
+        }
 
-        if not home_id or not away_id:
-            return "❌ Times não encontrados"
+        r = analisar_jogo(fake_fixture)
 
-        jogos = pegar_jogos(home_id) + pegar_jogos(away_id)
+        if not r:
+            return "❌ Sem valor"
 
-        gols = [
-            j["goals"]["home"] + j["goals"]["away"]
-            for j in jogos
-            if j["goals"]["home"] is not None and j["goals"]["away"] is not None
-        ]
+        return f"""🔍 ANÁLISE
 
-        if len(gols) < 8:
-            return "⚠️ Poucos dados"
+⚽ {home} x {away}
 
-        prob = int((sum(g >= 3 for g in gols) / len(gols)) * 100)
-        prob = min(prob, 85)
-
-        if prob < 60:
-            return "❌ Jogo sem valor"
-
-        return f"""🔍 ANÁLISE MANUAL
-
-⚽ {home.strip()} x {away.strip()}
-
-🎯 Over 2.5
-📊 {prob}%"""
+🎯 {r['entrada']}
+📊 {r['prob']}%
+"""
 
     except:
-        return "Erro"
+        return "❌ Erro"
 
 # ================= MAIN =================
 def main():
     global last_update_id
 
-    enviar("🤖 Gouvea Bet PRO ATUALIZADO 🔥")
+    enviar("🤖 BOT ELITE ATIVO 🔥")
 
-    ultimo_envio = 0
+    ultimo_auto = datetime.utcnow()
 
     while True:
         try:
-            agora = time.time()
+            # AUTO a cada 20 minutos
+            if (datetime.utcnow() - ultimo_auto).seconds > 1200:
+                auto()
+                ultimo_auto = datetime.utcnow()
 
-            if agora - ultimo_envio > INTERVALO:
-                enviar_sinais_automaticos()
-                ultimo_envio = agora
-
+            # TELEGRAM
             res = requests.get(
                 f"https://api.telegram.org/bot{TOKEN}/getUpdates",
                 params={"offset": last_update_id}
@@ -276,7 +305,10 @@ def main():
                 texto = u["message"].get("text", "").lower()
 
                 if "x" in texto:
-                    enviar(analise_manual(texto))
+                    enviar(manual(texto))
+
+                elif "multipla" in texto:
+                    auto()
 
         except:
             pass
