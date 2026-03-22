@@ -1,6 +1,7 @@
 import requests
 import time
 from datetime import datetime
+import unicodedata
 
 # ================= CONFIG =================
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
@@ -11,6 +12,13 @@ HEADERS = {"x-apisports-key": API_KEY}
 
 last_update_id = None
 jogos_enviados = set()
+
+# ================= NORMALIZAR =================
+def normalizar_nome(nome):
+    nome = nome.lower().strip()
+    nome = unicodedata.normalize('NFKD', nome)
+    nome = nome.encode('ASCII', 'ignore').decode('ASCII')
+    return nome
 
 # ================= REQUEST =================
 def safe_request(url, params=None):
@@ -23,6 +31,57 @@ def safe_request(url, params=None):
     except Exception as e:
         print("Erro request:", e)
     return None
+
+# ================= BUSCAR TIME INTELIGENTE =================
+def buscar_time(nome):
+    nome = normalizar_nome(nome)
+
+    mapa = {
+        "real madrid": "Real Madrid",
+        "atletico madrid": "Atletico Madrid",
+        "barcelona": "Barcelona",
+        "inter": "Inter",
+        "inter milan": "Inter",
+        "milan": "AC Milan",
+        "juventus": "Juventus",
+        "psg": "Paris Saint Germain",
+        "manchester united": "Manchester United",
+        "manchester city": "Manchester City",
+        "liverpool": "Liverpool",
+        "chelsea": "Chelsea",
+        "arsenal": "Arsenal",
+        "bayern": "Bayern Munich",
+        "dortmund": "Borussia Dortmund",
+        "flamengo": "Flamengo",
+        "corinthians": "Corinthians",
+        "palmeiras": "Palmeiras",
+        "santos": "Santos",
+        "cruzeiro": "Cruzeiro",
+        "gremio": "Gremio",
+        "internacional": "Internacional"
+    }
+
+    nome_busca = mapa.get(nome, nome)
+
+    data = safe_request(
+        "https://v3.football.api-sports.io/teams",
+        {"search": nome_busca}
+    )
+
+    if data and data.get("response"):
+        return data["response"][0]["team"]["id"]
+
+    return None
+
+# ================= HISTÓRICO =================
+def pegar_jogos(team_id):
+    data = safe_request("https://v3.football.api-sports.io/fixtures", {
+        "team": team_id,
+        "last": 10
+    })
+    if data:
+        return data.get("response", [])
+    return []
 
 # ================= LIGA =================
 def liga_valida(nome):
@@ -44,23 +103,6 @@ def liga_valida(nome):
         return False
 
     return any(b in nome for b in boas)
-
-# ================= TIMES =================
-def buscar_time(nome):
-    data = safe_request("https://v3.football.api-sports.io/teams", {"search": nome})
-    if data and data.get("response"):
-        return data["response"][0]["team"]["id"]
-    return None
-
-# ================= HISTÓRICO =================
-def pegar_jogos(team_id):
-    data = safe_request("https://v3.football.api-sports.io/fixtures", {
-        "team": team_id,
-        "last": 10
-    })
-    if data:
-        return data.get("response", [])
-    return []
 
 # ================= ODDS =================
 def pegar_odds(fixture_id):
@@ -308,7 +350,7 @@ def gerar_multipla(qtd=3):
 def main():
     global last_update_id
 
-    enviar("🤖 Gouvea Bet PRO FINAL Online!")
+    enviar("🤖 Gouvea Bet PRO Inteligente Online!")
 
     while True:
         try:
