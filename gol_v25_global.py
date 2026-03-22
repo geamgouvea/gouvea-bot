@@ -7,8 +7,7 @@ import unicodedata
 # ================= CONFIG =================
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
-API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd"
-
+API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd
 HEADERS = {"x-apisports-key": API_KEY}
 
 last_update_id = None
@@ -40,32 +39,12 @@ def enviar(msg):
     print(msg)
 
     try:
-        r = requests.post(
+        requests.post(
             f"https://api.telegram.org/bot{TOKEN}/sendMessage",
             data={"chat_id": CHAT_ID, "text": msg}
         )
-        print("STATUS:", r.status_code)
-        print("RESPOSTA:", r.text)
     except Exception as e:
         print("ERRO ENVIO:", e)
-
-# ================= BUSCAR TIME =================
-def buscar_time(nome):
-    try:
-        nome = normalizar(nome)
-
-        data = req("https://v3.football.api-sports.io/teams", {"search": nome})
-        if data and data.get("response"):
-            return data["response"][0]["team"]["id"]
-
-        nome_curto = nome.split()[0]
-        data = req("https://v3.football.api-sports.io/teams", {"search": nome_curto})
-        if data and data.get("response"):
-            return data["response"][0]["team"]["id"]
-    except Exception as e:
-        print("ERRO buscar_time:", e)
-
-    return None
 
 # ================= BUSCAR FIXTURE =================
 def buscar_fixture(home, away):
@@ -73,21 +52,15 @@ def buscar_fixture(home, away):
         home = normalizar(home)
         away = normalizar(away)
 
-        hoje = datetime.utcnow().strftime("%Y-%m-%d")
-        lista = []
+        data = req("https://v3.football.api-sports.io/fixtures", {"next": 50})
 
-        data = req("https://v3.football.api-sports.io/fixtures", {"date": hoje})
-        if data:
-            lista += data.get("response", [])
-
-        data = req("https://v3.football.api-sports.io/fixtures", {"next": 100})
-        if data:
-            lista += data.get("response", [])
+        if not data:
+            return None
 
         melhor = None
         score_max = 0
 
-        for j in lista:
+        for j in data.get("response", []):
             try:
                 h = normalizar(j["teams"]["home"]["name"])
                 a = normalizar(j["teams"]["away"]["name"])
@@ -108,8 +81,7 @@ def buscar_fixture(home, away):
 
     except Exception as e:
         print("ERRO buscar_fixture:", e)
-
-    return None
+        return None
 
 # ================= HISTÓRICO =================
 def historico(team_id):
@@ -119,8 +91,7 @@ def historico(team_id):
             "last": 10
         })
         return data.get("response", []) if data else []
-    except Exception as e:
-        print("ERRO historico:", e)
+    except:
         return []
 
 # ================= ODDS =================
@@ -161,11 +132,12 @@ def analisar(home, away):
         print(f"\n🔍 ANALISANDO: {home} x {away}")
 
         fixture = buscar_fixture(home, away)
-        home_id = buscar_time(home)
-        away_id = buscar_time(away)
 
-        if not home_id or not away_id:
-            return "❌ Times não encontrados"
+        if not fixture:
+            return "❌ Jogo não encontrado agora"
+
+        home_id = fixture["teams"]["home"]["id"]
+        away_id = fixture["teams"]["away"]["id"]
 
         jogos = historico(home_id) + historico(away_id)
 
@@ -203,26 +175,17 @@ def analisar(home, away):
         melhor = max(probs, key=probs.get)
         prob = probs[melhor]
 
-        odds = {}
-        liga = "N/A"
-        hora = "--:--"
-        home_nome = home
-        away_nome = away
+        liga = fixture["league"]["name"]
 
-        if fixture:
-            try:
-                odds = pegar_odds(fixture["fixture"]["id"])
-                liga = fixture["league"]["name"]
+        dt = datetime.fromisoformat(
+            fixture["fixture"]["date"].replace("Z","+00:00")
+        )
+        hora = dt.strftime("%H:%M")
 
-                dt = datetime.fromisoformat(
-                    fixture["fixture"]["date"].replace("Z","+00:00")
-                )
-                hora = dt.strftime("%H:%M")
+        home_nome = fixture["teams"]["home"]["name"]
+        away_nome = fixture["teams"]["away"]["name"]
 
-                home_nome = fixture["teams"]["home"]["name"]
-                away_nome = fixture["teams"]["away"]["name"]
-            except:
-                pass
+        odds = pegar_odds(fixture["fixture"]["id"])
 
         resposta = f"""🔍 ANÁLISE
 
@@ -247,7 +210,6 @@ def analisar(home, away):
 📈 Valor: {round(valor,1)}%"""
             else:
                 resposta += "\n\n⚠️ Sem valor"
-
         else:
             resposta += "\n\n⚠️ Sem odds"
 
@@ -255,7 +217,7 @@ def analisar(home, away):
 
     except Exception as e:
         print("ERRO ANALISAR:", e)
-        return "❌ Erro ao analisar jogo"
+        return "❌ Erro ao analisar"
 
 # ================= AUTO =================
 def auto():
@@ -283,7 +245,7 @@ def auto():
                             break
 
                     except Exception as e:
-                        print("ERRO JOGO AUTO:", e)
+                        print("ERRO AUTO JOGO:", e)
 
         except Exception as e:
             print("ERRO AUTO:", e)
@@ -295,7 +257,6 @@ def main():
     global last_update_id
 
     print("🚀 BOT INICIADO")
-
     enviar("🤖 BOT ATIVO COM SUCESSO")
 
     while True:
@@ -312,16 +273,10 @@ def main():
                     continue
 
                 texto = u["message"].get("text", "").lower()
-                print("📩 RECEBIDO:", texto)
 
                 if "x" in texto:
-                    try:
-                        h, a = texto.split("x")
-                        resposta = analisar(h.strip(), a.strip())
-                        enviar(resposta)
-                    except Exception as e:
-                        print("ERRO SPLIT:", e)
-                        enviar("❌ Erro ao ler o jogo")
+                    h, a = texto.split("x")
+                    enviar(analisar(h.strip(), a.strip()))
                 else:
                     enviar("⚠️ Use: time x time")
 
