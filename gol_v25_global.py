@@ -9,7 +9,6 @@ API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
 HEADERS = {"x-apisports-key": API_KEY}
 
 last_update_id = None
-bot_iniciado = False
 jogos_enviados = set()
 ultimo_loop = 0
 
@@ -31,11 +30,8 @@ def liga_valida(nome_liga):
 
     boas = [
         "premier", "la liga", "serie a", "bundesliga", "ligue 1",
-        "portugal", "eredivisie", "scotland", "scottish",
-        "brasileiro", "brazil", "argentina",
-        "mls", "mexico",
-        "champions league", "europa league",
-        "libertadores", "sudamericana"
+        "portugal", "eredivisie", "scotland", "brasileiro",
+        "argentina", "mls", "mexico"
     ]
 
     ruins = [
@@ -105,8 +101,7 @@ def pegar_odds(fixture_id):
 def tem_valor(prob, odd):
     if prob == 0:
         return False
-    odd_justa = 1 / prob
-    return odd > odd_justa
+    return odd > (1 / prob)
 
 # ================= ANÁLISE =================
 def analisar(fixture):
@@ -125,82 +120,48 @@ def analisar(fixture):
         if not home_id or not away_id:
             return None
 
-        jogos_home = pegar_jogos(home_id)
-        jogos_away = pegar_jogos(away_id)
+        jogos = pegar_jogos(home_id) + pegar_jogos(away_id)
 
-        peso = 1.0
-        soma_peso = 0
-
-        over25 = btts = home_win = away_win = 0
-
-        for j in jogos_home[-10:]:
-            try:
-                g1 = j["goals"]["home"]
-                g2 = j["goals"]["away"]
-                if g1 is None or g2 is None:
-                    continue
-
-                soma_peso += peso
-
-                if g1 > g2:
-                    home_win += peso
-                if g1 + g2 >= 3:
-                    over25 += peso
-                if g1 > 0 and g2 > 0:
-                    btts += peso
-
-                peso += 0.2
-            except:
-                continue
-
-        peso = 1.0
-
-        for j in jogos_away[-10:]:
-            try:
-                g1 = j["goals"]["home"]
-                g2 = j["goals"]["away"]
-                if g1 is None or g2 is None:
-                    continue
-
-                soma_peso += peso
-
-                if g2 > g1:
-                    away_win += peso
-                if g1 + g2 >= 3:
-                    over25 += peso
-                if g1 > 0 and g2 > 0:
-                    btts += peso
-
-                peso += 0.2
-            except:
-                continue
-
-        if soma_peso == 0:
+        if len(jogos) < 6:
             return None
 
-        prob_home = home_win / soma_peso
-        prob_away = away_win / soma_peso
-        prob_over25 = over25 / soma_peso
-        prob_btts = btts / soma_peso
+        gols = []
+        btts = 0
+
+        for j in jogos:
+            try:
+                g1 = j["goals"]["home"]
+                g2 = j["goals"]["away"]
+                if g1 is None or g2 is None:
+                    continue
+
+                total = g1 + g2
+                gols.append(total)
+
+                if g1 > 0 and g2 > 0:
+                    btts += 1
+            except:
+                continue
+
+        total = len(gols)
+
+        if total == 0:
+            return None
+
+        prob_over25 = sum(g >= 3 for g in gols) / total
+        prob_btts = btts / total
+
+        prob_over15 = min(0.90, prob_over25 + 0.20)
 
         odds = pegar_odds(fixture_id)
 
         opcoes = []
-
-        if "Home" in odds and tem_valor(prob_home, odds["Home"]):
-            opcoes.append(("Casa vence", prob_home))
-
-        if "Away" in odds and tem_valor(prob_away, odds["Away"]):
-            opcoes.append(("Fora vence", prob_away))
 
         if "Over 2.5" in odds and tem_valor(prob_over25, odds["Over 2.5"]):
             opcoes.append(("Over 2.5", prob_over25))
 
         if "BTTS_Yes" in odds and tem_valor(prob_btts, odds["BTTS_Yes"]):
             opcoes.append(("Ambas marcam", prob_btts))
-
-        # OVER 1.5
-        prob_over15 = min(0.90, prob_over25 + 0.15)
 
         if "Over 1.5" in odds and tem_valor(prob_over15, odds["Over 1.5"]):
             opcoes.append(("Over 1.5", prob_over15))
@@ -211,7 +172,7 @@ def analisar(fixture):
         melhor = max(opcoes, key=lambda x: x[1])
 
         prob = int(melhor[1] * 100)
-        forca = 10 if prob >= 85 else 9 if prob >= 78 else 8
+        forca = 10 if prob >= 80 else 9 if prob >= 72 else 8 if prob >= 65 else 7
 
         return melhor[0], prob, forca, liga
 
@@ -236,10 +197,8 @@ def buscar_jogos():
             dt = datetime.fromisoformat(j["fixture"]["date"].replace("Z","+00:00"))
             diff = (dt - agora).total_seconds()
 
-            if diff < 0 or diff > 43200:
-                continue
-
-            jogos.append(j)
+            if 0 < diff < 43200:
+                jogos.append(j)
         except:
             continue
 
@@ -256,46 +215,6 @@ def enviar(msg):
     except Exception as e:
         print("Erro envio:", e)
 
-# ================= AUTOMÁTICO =================
-def enviar_sinais():
-    jogos = buscar_jogos()
-    enviados_agora = 0
-
-    for j in jogos:
-        fixture_id = j["fixture"]["id"]
-
-        if fixture_id in jogos_enviados:
-            continue
-
-        home = j["teams"]["home"]["name"]
-        away = j["teams"]["away"]["name"]
-        hora = j["fixture"]["date"][11:16]
-
-        resultado = analisar(j)
-
-        if resultado:
-            entrada, prob, forca, liga = resultado
-
-            msg = f"""🔥 SINAL PRO
-
-🏆 Liga: {liga}
-
-⚽ {home} x {away}
-⏰ {hora}
-
-🎯 {entrada}
-📊 {prob}%
-🔥 Força: {forca}/10
-💰 Entrada com VALOR
-"""
-
-            enviar(msg)
-            jogos_enviados.add(fixture_id)
-            enviados_agora += 1
-
-        if enviados_agora >= 3:
-            break
-
 # ================= MÚLTIPLA =================
 def gerar_multipla(qtd=3):
     jogos = buscar_jogos()
@@ -308,14 +227,16 @@ def gerar_multipla(qtd=3):
             away = j["teams"]["away"]["name"]
             entrada, prob, _, liga = resultado
 
-            picks.append((home, away, entrada, prob, liga))
+            # 🔥 AGORA MAIS FLEXÍVEL
+            if prob >= 65:
+                picks.append((home, away, entrada, prob, liga))
 
     picks.sort(key=lambda x: x[3], reverse=True)
 
     if len(picks) < 2:
-        return "❌ Sem múltipla forte"
+        return "⚠️ Poucas oportunidades boas agora"
 
-    msg = "🔥 MÚLTIPLA PRO\n\n"
+    msg = "🔥 MÚLTIPLA AJUSTADA\n\n"
 
     for i, (h, a, e, p, l) in enumerate(picks[:qtd], 1):
         msg += f"{i}️⃣ {h} x {a}\n🏆 {l}\n🎯 {e} ({p}%)\n\n"
@@ -324,24 +245,15 @@ def gerar_multipla(qtd=3):
 
 # ================= MAIN =================
 def main():
-    global last_update_id, bot_iniciado, ultimo_loop
+    global last_update_id
 
-    enviar("🤖 Gouvea Bet PRO Online!")
+    enviar("🤖 Gouvea Bet PRO Ajustado Online!")
 
     while True:
         try:
-            agora = time.time()
-
-            if agora - ultimo_loop > 1200:
-                enviar_sinais()
-                ultimo_loop = agora
-
             res = requests.get(
                 f"https://api.telegram.org/bot{TOKEN}/getUpdates",
-                params={
-                    "timeout": 10,
-                    "offset": last_update_id if last_update_id else None
-                }
+                params={"timeout": 10, "offset": last_update_id}
             ).json()
 
             for u in res.get("result", []):
@@ -350,19 +262,17 @@ def main():
                 if "message" not in u:
                     continue
 
-                texto = u["message"].get("text", "")
-                texto = texto.lower().strip()
+                texto = u["message"].get("text", "").lower().strip()
 
-                print("Mensagem recebida:", texto)
+                print("Recebido:", texto)
 
                 if texto.startswith("multipla"):
                     partes = texto.split()
                     qtd = int(partes[1]) if len(partes) > 1 else 3
-                    resposta = gerar_multipla(qtd)
-                    enviar(resposta)
+                    enviar(gerar_multipla(qtd))
 
         except Exception as e:
-            print("ERRO LOOP:", e)
+            print("Erro:", e)
 
         time.sleep(5)
 
