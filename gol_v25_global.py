@@ -1,12 +1,14 @@
 import requests
 import time
-from datetime import datetime, timedelta
+import threading
+from datetime import datetime
 import unicodedata
 
 # ================= CONFIG =================
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd
+
 HEADERS = {"x-apisports-key": API_KEY}
 
 last_update_id = None
@@ -32,58 +34,51 @@ def req(url, params=None):
 def buscar_time(nome):
     nome = normalizar(nome)
 
-    mapa = {
-        "real": "Real Madrid",
-        "real madrid": "Real Madrid",
-        "atletico": "Atletico Madrid",
-        "atletico madrid": "Atletico Madrid",
-        "inter": "Inter",
-        "inter milao": "Inter",
-        "inter de milao": "Inter",
-        "milan": "AC Milan",
-        "psg": "Paris Saint Germain",
-    }
-
-    nome = mapa.get(nome, nome)
-
     data = req("https://v3.football.api-sports.io/teams", {"search": nome})
+    if data and data.get("response"):
+        return data["response"][0]["team"]["id"]
 
-    if data and data["response"]:
+    nome_curto = nome.split()[0]
+    data = req("https://v3.football.api-sports.io/teams", {"search": nome_curto})
+    if data and data.get("response"):
         return data["response"][0]["team"]["id"]
 
     return None
 
-# ================= BUSCAR JOGO (CORRIGIDO) =================
+# ================= BUSCAR FIXTURE =================
 def buscar_fixture(home, away):
+    home = normalizar(home)
+    away = normalizar(away)
+
     hoje = datetime.utcnow().strftime("%Y-%m-%d")
+    lista = []
 
-    # tenta hoje
     data = req("https://v3.football.api-sports.io/fixtures", {"date": hoje})
-
     if data:
-        for j in data["response"]:
-            h = normalizar(j["teams"]["home"]["name"])
-            a = normalizar(j["teams"]["away"]["name"])
+        lista += data.get("response", [])
 
-            if home in h and away in a:
-                return j
-            if away in h and home in a:
-                return j
-
-    # fallback próximos
-    data = req("https://v3.football.api-sports.io/fixtures", {"next": 50})
-
+    data = req("https://v3.football.api-sports.io/fixtures", {"next": 100})
     if data:
-        for j in data["response"]:
-            h = normalizar(j["teams"]["home"]["name"])
-            a = normalizar(j["teams"]["away"]["name"])
+        lista += data.get("response", [])
 
-            if home in h and away in a:
-                return j
-            if away in h and home in a:
-                return j
+    melhor = None
+    score_max = 0
 
-    return None
+    for j in lista:
+        h = normalizar(j["teams"]["home"]["name"])
+        a = normalizar(j["teams"]["away"]["name"])
+
+        score = 0
+        if home in h or h in home:
+            score += 1
+        if away in a or a in away:
+            score += 1
+
+        if score > score_max:
+            score_max = score
+            melhor = j
+
+    return melhor
 
 # ================= HISTÓRICO =================
 def historico(team_id):
@@ -91,25 +86,41 @@ def historico(team_id):
         "team": team_id,
         "last": 10
     })
-    return data["response"] if data else []
+    return data.get("response", []) if data else []
+
+# ================= ODDS =================
+def pegar_odds(fixture_id):
+    data = req("https://v3.football.api-sports.io/odds", {"fixture": fixture_id})
+
+    odds = {}
+
+    if not data or not data.get("response"):
+        return odds
+
+    try:
+        for book in data["response"][0]["bookmakers"]:
+            for bet in book["bets"]:
+                if bet["name"] == "Goals Over/Under":
+                    for v in bet["values"]:
+                        if "Over 2.5" in v["value"]:
+                            odds["Over 2.5"] = float(v["odd"])
+                        if "Under 2.5" in v["value"]:
+                            odds["Under 2.5"] = float(v["odd"])
+                        if "Over 1.5" in v["value"]:
+                            odds["Over 1.5"] = float(v["odd"])
+
+                if bet["name"] == "Both Teams Score":
+                    for v in bet["values"]:
+                        if v["value"] == "Yes":
+                            odds["Ambas marcam"] = float(v["odd"])
+    except:
+        pass
+
+    return odds
 
 # ================= ANALISE =================
 def analisar(home, away):
-    home_n = normalizar(home)
-    away_n = normalizar(away)
-
-    fixture = buscar_fixture(home_n, away_n)
-
-    if not fixture:
-        return "❌ Jogo não encontrado"
-
-    home_nome = fixture["teams"]["home"]["name"]
-    away_nome = fixture["teams"]["away"]["name"]
-    liga = fixture["league"]["name"]
-    data_jogo = fixture["fixture"]["date"]
-
-    dt = datetime.fromisoformat(data_jogo.replace("Z","+00:00"))
-    hora = dt.strftime("%H:%M")
+    fixture = buscar_fixture(home, away)
 
     home_id = buscar_time(home)
     away_id = buscar_time(away)
@@ -123,81 +134,100 @@ def analisar(home, away):
     btts = 0
 
     for j in jogos:
-        try:
-            g1 = j["goals"]["home"]
-            g2 = j["goals"]["away"]
+        g1 = j["goals"]["home"]
+        g2 = j["goals"]["away"]
 
-            if g1 is None or g2 is None:
-                continue
-
-            total = g1 + g2
-            gols.append(total)
-
-            if g1 > 0 and g2 > 0:
-                btts += 1
-        except:
+        if g1 is None or g2 is None:
             continue
+
+        total = g1 + g2
+        gols.append(total)
+
+        if g1 > 0 and g2 > 0:
+            btts += 1
 
     if not gols:
         return "❌ Sem dados"
 
     total = len(gols)
 
-    p_over15 = sum(g >= 2 for g in gols) / total
-    p_over25 = sum(g >= 3 for g in gols) / total
-    p_under25 = sum(g <= 2 for g in gols) / total
-    p_btts = btts / total
-
-    opcoes = {
-        "Over 1.5": p_over15,
-        "Over 2.5": p_over25,
-        "Under 2.5": p_under25,
-        "Ambas marcam": p_btts
+    probs = {
+        "Over 1.5": sum(g >= 2 for g in gols) / total,
+        "Over 2.5": sum(g >= 3 for g in gols) / total,
+        "Under 2.5": sum(g <= 2 for g in gols) / total,
+        "Ambas marcam": btts / total
     }
 
-    melhor = max(opcoes, key=opcoes.get)
-    prob = int(opcoes[melhor] * 100)
+    melhor = max(probs, key=probs.get)
+    prob = probs[melhor]
 
-    return f"""🔍 ANÁLISE
+    odds = {}
+    liga = "N/A"
+    hora = "--:--"
+    home_nome = home
+    away_nome = away
+
+    if fixture:
+        odds = pegar_odds(fixture["fixture"]["id"])
+        liga = fixture["league"]["name"]
+        dt = datetime.fromisoformat(fixture["fixture"]["date"].replace("Z","+00:00"))
+        hora = dt.strftime("%H:%M")
+        home_nome = fixture["teams"]["home"]["name"]
+        away_nome = fixture["teams"]["away"]["name"]
+
+    resposta = f"""🔍 ANÁLISE
 
 ⚽ {home_nome} x {away_nome}
 🏆 {liga}
 ⏰ {hora}
 
 🎯 Melhor entrada: {melhor}
-📊 Probabilidade: {prob}%"""
+📊 Probabilidade: {int(prob*100)}%"""
 
-# ================= MULTIPLA =================
-def multipla(qtd=3):
-    data = req("https://v3.football.api-sports.io/fixtures", {"next": 30})
+    # VALUE BET
+    if melhor in odds:
+        odd_real = odds[melhor]
+        odd_justa = 1 / prob if prob > 0 else 0
 
-    if not data:
-        return "❌ Erro API"
+        if odd_real > odd_justa:
+            valor = (odd_real / odd_justa - 1) * 100
 
-    jogos = []
+            resposta += f"""
 
-    for j in data["response"]:
-        home = j["teams"]["home"]["name"]
-        away = j["teams"]["away"]["name"]
+🔥 VALUE BET
+💰 Odd: {odd_real}
+📉 Odd justa: {round(odd_justa,2)}
+📈 Valor: {round(valor,1)}%"""
+        else:
+            resposta += "\n\n⚠️ Sem valor nas odds atuais"
 
-        res = analisar(home, away)
+    else:
+        resposta += "\n\n⚠️ Odds não disponíveis"
 
-        if "Probabilidade" in res:
-            prob = int(res.split("Probabilidade: ")[1].replace("%",""))
-            if prob >= 65:
-                jogos.append((prob, res))
+    return resposta
 
-    jogos.sort(reverse=True)
+# ================= AUTO =================
+def auto():
+    while True:
+        data = req("https://v3.football.api-sports.io/fixtures", {"next": 30})
 
-    if len(jogos) < 2:
-        return "⚠️ Poucas oportunidades agora"
+        if data:
+            enviados = 0
 
-    msg = "🔥 MÚLTIPLA\n\n"
+            for j in data["response"]:
+                h = j["teams"]["home"]["name"]
+                a = j["teams"]["away"]["name"]
 
-    for i, (_, r) in enumerate(jogos[:qtd], 1):
-        msg += f"{i}️⃣\n{r}\n\n"
+                res = analisar(h, a)
 
-    return msg
+                if "VALUE BET" in res:
+                    enviar("🔥 SINAL AUTOMÁTICO\n\n" + res)
+                    enviados += 1
+
+                if enviados >= 5:
+                    break
+
+        time.sleep(1200)
 
 # ================= TELEGRAM =================
 def enviar(msg):
@@ -210,7 +240,7 @@ def enviar(msg):
 def main():
     global last_update_id
 
-    enviar("🤖 BOT ELITE ATIVO 🔥")
+    enviar("🤖 BOT VALUE BET ATIVO 💰")
 
     while True:
         try:
@@ -227,25 +257,19 @@ def main():
 
                 texto = u["message"].get("text", "").lower()
 
-                if "multipla" in texto:
-                    partes = texto.split()
-                    qtd = int(partes[1]) if len(partes) > 1 else 3
-                    enviar(multipla(qtd))
-
-                elif "x" in texto:
-                    try:
-                        h, a = texto.split("x")
-                        enviar(analisar(h.strip(), a.strip()))
-                    except:
-                        enviar("⚠️ Use: time x time")
+                if "x" in texto:
+                    h, a = texto.split("x")
+                    enviar(analisar(h.strip(), a.strip()))
 
                 else:
-                    enviar("⚠️ Use:\n- time x time\n- multipla 2")
+                    enviar("⚠️ Use: time x time")
 
-        except Exception as e:
-            print("Erro:", e)
+        except:
+            pass
 
         time.sleep(5)
 
+# ================= START =================
 if __name__ == "__main__":
+    threading.Thread(target=auto).start()
     main()
