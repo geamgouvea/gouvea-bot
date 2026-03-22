@@ -6,11 +6,11 @@ from datetime import datetime
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
+
 HEADERS = {"x-apisports-key": API_KEY}
 
 last_update_id = None
 jogos_enviados = set()
-ultimo_loop = 0
 
 # ================= REQUEST =================
 def safe_request(url, params=None):
@@ -25,13 +25,13 @@ def safe_request(url, params=None):
     return None
 
 # ================= LIGA =================
-def liga_valida(nome_liga):
-    nome = nome_liga.lower()
+def liga_valida(nome):
+    nome = nome.lower()
 
     boas = [
-        "premier", "la liga", "serie a", "bundesliga", "ligue 1",
-        "portugal", "eredivisie", "scotland", "brasileiro",
-        "argentina", "mls", "mexico"
+        "premier", "la liga", "serie a", "bundesliga",
+        "ligue 1", "portugal", "eredivisie",
+        "scotland", "brasileiro", "argentina"
     ]
 
     ruins = [
@@ -78,20 +78,16 @@ def pegar_odds(fixture_id):
             for bet in book["bets"]:
                 nome = bet["name"]
 
-                if nome == "Match Winner":
-                    for v in bet["values"]:
-                        odds[v["value"]] = float(v["odd"])
-
-                if nome == "Both Teams Score":
-                    for v in bet["values"]:
-                        odds["BTTS_" + v["value"]] = float(v["odd"])
-
                 if nome == "Goals Over/Under":
                     for v in bet["values"]:
                         if "Over 2.5" in v["value"]:
                             odds["Over 2.5"] = float(v["odd"])
                         if "Over 1.5" in v["value"]:
                             odds["Over 1.5"] = float(v["odd"])
+
+                if nome == "Both Teams Score":
+                    for v in bet["values"]:
+                        odds["BTTS_Yes"] = float(v["odd"])
     except Exception as e:
         print("Erro odds:", e)
 
@@ -103,7 +99,7 @@ def tem_valor(prob, odd):
         return False
     return odd > (1 / prob)
 
-# ================= ANÁLISE =================
+# ================= ANALISE AUTO =================
 def analisar(fixture):
     try:
         home = fixture["teams"]["home"]["name"]
@@ -132,11 +128,11 @@ def analisar(fixture):
             try:
                 g1 = j["goals"]["home"]
                 g2 = j["goals"]["away"]
+
                 if g1 is None or g2 is None:
                     continue
 
-                total = g1 + g2
-                gols.append(total)
+                gols.append(g1 + g2)
 
                 if g1 > 0 and g2 > 0:
                     btts += 1
@@ -144,13 +140,11 @@ def analisar(fixture):
                 continue
 
         total = len(gols)
-
         if total == 0:
             return None
 
         prob_over25 = sum(g >= 3 for g in gols) / total
         prob_btts = btts / total
-
         prob_over15 = min(0.90, prob_over25 + 0.20)
 
         odds = pegar_odds(fixture_id)
@@ -179,6 +173,74 @@ def analisar(fixture):
     except Exception as e:
         print("Erro análise:", e)
         return None
+
+# ================= ANALISE MANUAL =================
+def analise_manual(texto):
+    if "x" not in texto:
+        return "⚠️ Use: Time A x Time B"
+
+    try:
+        home, away = texto.split("x")
+        home = home.strip()
+        away = away.strip()
+    except:
+        return "❌ Erro ao ler times"
+
+    home_id = buscar_time(home)
+    away_id = buscar_time(away)
+
+    if not home_id or not away_id:
+        return "❌ Times não encontrados"
+
+    jogos = pegar_jogos(home_id) + pegar_jogos(away_id)
+
+    if len(jogos) < 6:
+        return "⚠️ Poucos dados"
+
+    gols = []
+    btts = 0
+
+    for j in jogos:
+        try:
+            g1 = j["goals"]["home"]
+            g2 = j["goals"]["away"]
+
+            if g1 is None or g2 is None:
+                continue
+
+            gols.append(g1 + g2)
+
+            if g1 > 0 and g2 > 0:
+                btts += 1
+        except:
+            continue
+
+    total = len(gols)
+    if total == 0:
+        return "❌ Sem dados"
+
+    prob_over25 = sum(g >= 3 for g in gols) / total
+    prob_btts = btts / total
+    prob_over15 = min(0.90, prob_over25 + 0.20)
+
+    if prob_over25 >= 0.65:
+        entrada = "Over 2.5"
+        prob = prob_over25
+    elif prob_btts >= 0.60:
+        entrada = "Ambas marcam"
+        prob = prob_btts
+    else:
+        entrada = "Over 1.5"
+        prob = prob_over15
+
+    prob = int(prob * 100)
+
+    return f"""🔍 ANÁLISE MANUAL
+
+⚽ {home} x {away}
+
+🎯 {entrada}
+📊 {prob}%"""
 
 # ================= BUSCAR JOGOS =================
 def buscar_jogos():
@@ -215,7 +277,7 @@ def enviar(msg):
     except Exception as e:
         print("Erro envio:", e)
 
-# ================= MÚLTIPLA =================
+# ================= MULTIPLA =================
 def gerar_multipla(qtd=3):
     jogos = buscar_jogos()
     picks = []
@@ -227,7 +289,6 @@ def gerar_multipla(qtd=3):
             away = j["teams"]["away"]["name"]
             entrada, prob, _, liga = resultado
 
-            # 🔥 AGORA MAIS FLEXÍVEL
             if prob >= 65:
                 picks.append((home, away, entrada, prob, liga))
 
@@ -247,13 +308,16 @@ def gerar_multipla(qtd=3):
 def main():
     global last_update_id
 
-    enviar("🤖 Gouvea Bet PRO Ajustado Online!")
+    enviar("🤖 Gouvea Bet PRO FINAL Online!")
 
     while True:
         try:
             res = requests.get(
                 f"https://api.telegram.org/bot{TOKEN}/getUpdates",
-                params={"timeout": 10, "offset": last_update_id}
+                params={
+                    "timeout": 10,
+                    "offset": last_update_id if last_update_id else None
+                }
             ).json()
 
             for u in res.get("result", []):
@@ -271,8 +335,14 @@ def main():
                     qtd = int(partes[1]) if len(partes) > 1 else 3
                     enviar(gerar_multipla(qtd))
 
+                elif "x" in texto:
+                    enviar(analise_manual(texto))
+
+                else:
+                    enviar("⚠️ Use:\n- multipla 2\n- time a x time b")
+
         except Exception as e:
-            print("Erro:", e)
+            print("ERRO:", e)
 
         time.sleep(5)
 
