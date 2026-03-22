@@ -1,6 +1,6 @@
 import requests
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 import unicodedata
 
 # ================= CONFIG =================
@@ -37,8 +37,8 @@ def buscar_time(nome):
         "inter": "Inter",
         "inter milao": "Inter",
         "internazionale": "Inter",
-        "man united": "Manchester United",
-        "psg": "Paris Saint Germain"
+        "psg": "Paris Saint Germain",
+        "man united": "Manchester United"
     }
 
     nome = mapa.get(nome, nome)
@@ -81,7 +81,6 @@ def pegar_odds(fixture_id):
                 if bet["name"] == "Both Teams Score":
                     for v in bet["values"]:
                         odds[v["value"]] = float(v["odd"])
-
     except:
         pass
 
@@ -160,14 +159,15 @@ def analisar_jogo(fixture):
 
         for mercado, p in mercados.items():
             odd = odds.get(mercado)
-            if odd and p > 0.60 and odd > (1 / p):
+
+            # 🔥 FILTRO AJUSTADO (EQUILÍBRIO)
+            if odd and p > 0.55 and odd >= (1 / p) * 0.90:
                 oportunidades.append((mercado, p))
 
         if not oportunidades:
             return None
 
         melhor = max(oportunidades, key=lambda x: x[1])
-
         prob_final = int(melhor[1] * 100)
 
         return {
@@ -193,10 +193,13 @@ def buscar_jogos():
 
     for j in data.get("response", []):
         try:
+            if j["fixture"]["status"]["short"] != "NS":
+                continue
+
             dt = datetime.fromisoformat(j["fixture"]["date"].replace("Z","+00:00"))
             diff = (dt - agora).total_seconds()
 
-            if 0 < diff < 43200:  # 12h
+            if 0 < diff < 43200:
                 jogos.append(j)
         except:
             continue
@@ -216,7 +219,6 @@ def enviar(msg):
 # ================= AUTO =================
 def auto():
     jogos = buscar_jogos()
-
     sinais = []
 
     for j in jogos:
