@@ -12,7 +12,7 @@ API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
 
 HEADERS = {"x-apisports-key": API_KEY}
 
-AUTO_INTERVALO = 1800  # 30 min
+AUTO_INTERVALO = 1800
 
 enviados_ids = set()
 last_update_id = None
@@ -52,9 +52,7 @@ def enviar(msg):
 def buscar_time(nome):
     nome_n = normalizar(nome)
 
-    data = req("https://v3.football.api-sports.io/teams", {
-        "search": nome_n
-    })
+    data = req("https://v3.football.api-sports.io/teams", {"search": nome_n})
 
     if not data or not data.get("response"):
         return None
@@ -83,7 +81,7 @@ def historico(team_id):
     })
     return data.get("response", []) if data else []
 
-# ================= BUSCAR FIXTURE (SEM LIMITE) =================
+# ================= BUSCAR FIXTURE =================
 def buscar_fixture(home_id, away_id):
     data = req("https://v3.football.api-sports.io/fixtures", {
         "team": home_id,
@@ -94,21 +92,56 @@ def buscar_fixture(home_id, away_id):
         return None
 
     for j in data.get("response", []):
-        h_id = j["teams"]["home"]["id"]
-        a_id = j["teams"]["away"]["id"]
+        h = j["teams"]["home"]["id"]
+        a = j["teams"]["away"]["id"]
 
-        if (h_id == home_id and a_id == away_id) or \
-           (h_id == away_id and a_id == home_id):
+        if (h == home_id and a == away_id) or (h == away_id and a == home_id):
 
             liga = normalizar(j["league"]["name"])
 
-            # bloqueios
-            if any(x in liga for x in ["women", "feminina", "u20", "u21", "u23"]):
+            if any(x in liga for x in ["women", "u20", "u21", "u23"]):
                 continue
 
             return j
 
     return None
+
+# ================= CLASSIFICAÇÃO =================
+def classificar(melhor, prob, media):
+
+    if melhor == "Over 1.5":
+        if prob >= 0.78 and media >= 2.7:
+            return "🔥 FORTE"
+        elif prob >= 0.72 and media >= 2.4:
+            return "⚖️ MÉDIA"
+        else:
+            return "⚠️ RISCO"
+
+    if melhor == "Over 2.5":
+        if prob >= 0.72 and media >= 2.9:
+            return "🔥 FORTE"
+        elif prob >= 0.68 and media >= 2.6:
+            return "⚖️ MÉDIA"
+        else:
+            return "⚠️ RISCO"
+
+    if melhor == "Under 2.5":
+        if prob >= 0.78 and media <= 2.0:
+            return "🔥 FORTE"
+        elif prob >= 0.72 and media <= 2.3:
+            return "⚖️ MÉDIA"
+        else:
+            return "⚠️ RISCO"
+
+    if melhor == "Ambas Marcam":
+        if prob >= 0.72 and media >= 2.7:
+            return "🔥 FORTE"
+        elif prob >= 0.68 and media >= 2.5:
+            return "⚖️ MÉDIA"
+        else:
+            return "⚠️ RISCO"
+
+    return "⚠️ RISCO"
 
 # ================= ANALISE =================
 def analisar(home, away, modo="manual"):
@@ -151,6 +184,8 @@ def analisar(home, away, modo="manual"):
     melhor = max(probs, key=probs.get)
     prob = probs[melhor]
 
+    nivel = classificar(melhor, prob, media)
+
     fixture = buscar_fixture(home_id, away_id)
 
     if fixture:
@@ -179,7 +214,9 @@ def analisar(home, away, modo="manual"):
 
 🎯 {melhor}
 📊 {int(prob*100)}%
-📈 Média gols: {round(media,2)}"""
+📈 Média gols: {round(media,2)}
+
+{nivel}"""
 
 # ================= AUTO =================
 def auto():
@@ -209,7 +246,7 @@ def auto():
 
                     res = analisar(h, a, modo="auto")
 
-                    if "❌" in res:
+                    if "⚠️ RISCO" in res:
                         continue
 
                     enviar("🤖 AUTO\n\n🔥 SINAL\n\n" + res)
