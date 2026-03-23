@@ -51,7 +51,6 @@ def enviar(msg):
 # ================= BUSCAR TIME =================
 def buscar_time(nome):
     nome_n = normalizar(nome)
-
     data = req("https://v3.football.api-sports.io/teams", {"search": nome_n})
 
     if not data or not data.get("response"):
@@ -96,7 +95,6 @@ def buscar_fixture(home_id, away_id):
         a = j["teams"]["away"]["id"]
 
         if (h == home_id and a == away_id) or (h == away_id and a == home_id):
-
             liga = normalizar(j["league"]["name"])
 
             if any(x in liga for x in ["women", "u20", "u21", "u23"]):
@@ -144,12 +142,12 @@ def classificar(melhor, prob, media):
     return "⚠️ RISCO"
 
 # ================= ANALISE =================
-def analisar(home, away, modo="manual"):
+def analisar(home, away):
     home_id = buscar_time(home)
     away_id = buscar_time(away)
 
     if not home_id or not away_id:
-        return "❌ Times não encontrados"
+        return None  # CORREÇÃO LIMPA
 
     jogos = historico(home_id) + historico(away_id)
 
@@ -169,7 +167,7 @@ def analisar(home, away, modo="manual"):
             btts += 1
 
     if not gols:
-        return "❌ Sem dados"
+        return None  # CORREÇÃO LIMPA
 
     total = len(gols)
     media = sum(gols) / total
@@ -200,10 +198,7 @@ def analisar(home, away, modo="manual"):
 
         confronto = f"{fixture['teams']['home']['name']} x {fixture['teams']['away']['name']}"
     else:
-        liga = "Estimado"
-        data_txt = "--/--"
-        hora = "--:--"
-        confronto = f"{home} x {away}"
+        return None  # CORREÇÃO LIMPA
 
     return f"""🔎 ANÁLISE
 
@@ -244,7 +239,11 @@ def auto():
                     h = j["teams"]["home"]["name"]
                     a = j["teams"]["away"]["name"]
 
-                    res = analisar(h, a, modo="auto")
+                    res = analisar(h, a)
+
+                    # ✅ CORREÇÃO DEFINITIVA
+                    if not res:
+                        continue
 
                     if "⚠️ RISCO" in res:
                         continue
@@ -272,7 +271,12 @@ def manual(texto):
 
         h, a = texto.split(" x ")
 
-        return "🧠 MANUAL\n\n" + analisar(h.strip(), a.strip())
+        res = analisar(h.strip(), a.strip())
+
+        if not res:
+            return "❌ Não foi possível analisar o jogo"
+
+        return "🧠 MANUAL\n\n" + res
 
     except:
         return "⚠️ Erro. Use: time x time"
