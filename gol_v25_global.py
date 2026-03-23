@@ -9,10 +9,9 @@ from difflib import SequenceMatcher
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
-
 HEADERS = {"x-apisports-key": API_KEY}
 
-AUTO_INTERVALO = 1800
+AUTO_INTERVALO = 1800  # 30 min
 JANELA_MIN = 10
 JANELA_MAX = 720
 
@@ -22,12 +21,10 @@ last_update_id = None
 # ================= DATA FIX (DEFINITIVO) =================
 def parse_data(data_str):
     try:
-        return datetime.fromisoformat(data_str.replace("Z", ""))
+        dt = datetime.fromisoformat(data_str.replace("Z", "+00:00"))
+        return dt.replace(tzinfo=None)
     except:
-        try:
-            return datetime.strptime(data_str, "%Y-%m-%dT%H:%M:%S")
-        except:
-            return None
+        return None
 
 # ================= NORMALIZAR =================
 def normalizar(nome):
@@ -44,8 +41,8 @@ def req(url, params=None):
         r = requests.get(url, headers=HEADERS, params=params, timeout=10)
         if r.status_code == 200:
             return r.json()
-    except Exception as e:
-        enviar(f"❌ ERRO API: {e}")
+    except:
+        pass
     return None
 
 # ================= TELEGRAM =================
@@ -66,7 +63,7 @@ def buscar_fixture(home, away):
     melhor = None
     melhor_score = 0
 
-    for i in range(30):
+    for i in range(60):  # busca ampla (2 meses)
         data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
 
         data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
@@ -79,6 +76,7 @@ def buscar_fixture(home, away):
 
             score = (similar(home_n, h) + similar(away_n, a)) / 2
             score_inv = (similar(home_n, a) + similar(away_n, h)) / 2
+
             final = max(score, score_inv)
 
             if final > melhor_score:
@@ -95,7 +93,7 @@ def historico(team_id):
     })
     return data.get("response", []) if data else []
 
-# ================= DECISÃO =================
+# ================= ESCOLHA DE MERCADO =================
 def escolher_mercado(media, probs):
 
     if media >= 2.8 and probs["Over 2.5"] >= 0.65:
@@ -156,7 +154,6 @@ def analisar(home, away):
 
     melhor, prob = escolher_mercado(media, probs)
 
-    # ✅ USO DO PARSER CORRIGIDO
     dt = parse_data(fixture["fixture"]["date"])
     if not dt:
         return None
