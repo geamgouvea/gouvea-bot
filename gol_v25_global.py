@@ -24,6 +24,8 @@ def req(url, params=None):
         r = requests.get(url, headers=HEADERS, params=params, timeout=10)
         if r.status_code == 200:
             return r.json()
+        else:
+            print("ERRO API:", r.status_code)
     except Exception as e:
         print("ERRO REQUEST:", e)
     return None
@@ -46,6 +48,7 @@ def buscar_time(nome):
     if data and data.get("response"):
         return data["response"][0]["team"]["id"]
 
+    # fallback nome curto
     nome_curto = nome.split()[0]
     data = req("https://v3.football.api-sports.io/teams", {"search": nome_curto})
     if data and data.get("response"):
@@ -61,12 +64,14 @@ def historico(team_id):
     })
     return data.get("response", []) if data else []
 
-# ================= BUSCAR FIXTURE =================
+# ================= BUSCAR JOGO GLOBAL =================
 def buscar_fixture(home, away):
     home = normalizar(home)
     away = normalizar(away)
 
-    data = req("https://v3.football.api-sports.io/fixtures", {"next": 100})
+    # busca ampla (pega jogos do mundo inteiro)
+    data = req("https://v3.football.api-sports.io/fixtures", {"next": 200})
+
     if not data:
         return None
 
@@ -78,6 +83,7 @@ def buscar_fixture(home, away):
         a = normalizar(j["teams"]["away"]["name"])
 
         score = 0
+
         if home in h or h in home:
             score += 1
         if away in a or a in away:
@@ -94,35 +100,7 @@ def buscar_fixture(home, away):
 
     return None
 
-# ================= ODDS =================
-def pegar_odds(fixture_id):
-    odds = {}
-
-    data = req("https://v3.football.api-sports.io/odds", {"fixture": fixture_id})
-
-    if not data or not data.get("response"):
-        return odds
-
-    for book in data["response"][0].get("bookmakers", []):
-        for bet in book.get("bets", []):
-
-            if bet["name"] == "Goals Over/Under":
-                for v in bet["values"]:
-                    if "Over 2.5" in v["value"]:
-                        odds["Over 2.5"] = float(v["odd"])
-                    if "Under 2.5" in v["value"]:
-                        odds["Under 2.5"] = float(v["odd"])
-                    if "Over 1.5" in v["value"]:
-                        odds["Over 1.5"] = float(v["odd"])
-
-            if bet["name"] == "Both Teams Score":
-                for v in bet["values"]:
-                    if v["value"] == "Yes":
-                        odds["Ambas marcam"] = float(v["odd"])
-
-    return odds
-
-# ================= ANALISE PRO =================
+# ================= ANALISE =================
 def analisar(home, away):
     try:
         home_id = buscar_time(home)
@@ -153,37 +131,26 @@ def analisar(home, away):
                 continue
 
         if not gols:
-            return "❌ Sem dados"
+            return "❌ Sem dados suficientes"
 
         total = len(gols)
 
-        p_over15 = sum(g >= 2 for g in gols) / total
-        p_over25 = sum(g >= 3 for g in gols) / total
-        p_under25 = sum(g <= 2 for g in gols) / total
-        p_btts = btts / total
-
-        media_gols = sum(gols) / total
-
-        opcoes = {
-            "Over 1.5": p_over15,
-            "Over 2.5": p_over25,
-            "Under 2.5": p_under25,
-            "Ambas marcam": p_btts
+        probs = {
+            "Over 1.5": sum(g >= 2 for g in gols) / total,
+            "Over 2.5": sum(g >= 3 for g in gols) / total,
+            "Under 2.5": sum(g <= 2 for g in gols) / total,
+            "Ambas marcam": btts / total
         }
 
-        melhor = max(opcoes, key=opcoes.get)
-        prob = opcoes[melhor]
+        melhor = max(probs, key=probs.get)
+        prob = int(probs[melhor] * 100)
 
-        # ================= FILTRO PRO =================
-        if prob < 0.65 or media_gols < 2.2:
-            return "⚠️ Jogo descartado (baixo valor)"
-
-        # ================= FIXTURE =================
         fixture = buscar_fixture(home, away)
 
         liga = "N/A"
         hora = "--:--"
-        odds = {}
+        home_nome = home
+        away_nome = away
 
         if fixture:
             try:
@@ -194,64 +161,50 @@ def analisar(home, away):
                 )
                 hora = dt.strftime("%H:%M")
 
-                odds = pegar_odds(fixture["fixture"]["id"])
+                home_nome = fixture["teams"]["home"]["name"]
+                away_nome = fixture["teams"]["away"]["name"]
             except:
                 pass
 
-        # ================= VALUE =================
-        resposta = f"""🔥 SINAL PRO
+        return f"""🔥 SINAL PRO
 
-⚽ {home} x {away}
+⚽ {home_nome} x {away_nome}
 🏆 {liga}
 ⏰ {hora}
 
 🎯 {melhor}
-📊 {int(prob*100)}%
-📈 Média gols: {round(media_gols,2)}"""
+📊 {prob}%
+📈 Média gols: {round(sum(gols)/len(gols),2)}
 
-        if melhor in odds:
-            odd_real = odds[melhor]
-            odd_justa = 1 / prob
-
-            if odd_real > odd_justa:
-                valor = (odd_real / odd_justa - 1) * 100
-
-                resposta += f"""
-
-💰 Odd: {odd_real}
-📉 Justa: {round(odd_justa,2)}
-🔥 Valor: {round(valor,1)}%
-⭐ Confiança: {min(10, int(prob*10))}/10"""
-            else:
-                return "⚠️ Sem valor real"
-
-        else:
-            resposta += "\n⚠️ Sem odds (apenas estatística)"
-
-        return resposta
+⚠️ Sem odds (apenas estatística)"""
 
     except Exception as e:
         print("ERRO ANALISE:", e)
-        return "❌ Erro"
+        return "❌ Erro ao analisar"
 
-# ================= AUTO PRO =================
+# ================= AUTO =================
 def auto():
     while True:
         try:
-            data = req("https://v3.football.api-sports.io/fixtures", {"next": 20})
+            print("🤖 AUTO RODANDO...")
+
+            data = req("https://v3.football.api-sports.io/fixtures", {"next": 50})
 
             if data:
                 enviados = 0
 
                 for j in data.get("response", []):
-                    h = j["teams"]["home"]["name"]
-                    a = j["teams"]["away"]["name"]
+                    home = j["teams"]["home"]["name"]
+                    away = j["teams"]["away"]["name"]
 
-                    res = analisar(h, a)
+                    res = analisar(home, away)
 
-                    if "SINAL PRO" in res:
-                        enviar("🤖 AUTO\n\n" + res)
-                        enviados += 1
+                    if "📊" in res:
+                        prob = int(res.split("📊 ")[1].split("%")[0])
+
+                        if prob >= 75:
+                            enviar("🤖 AUTO\n\n" + res)
+                            enviados += 1
 
                     if enviados >= 3:
                         break
@@ -265,8 +218,8 @@ def auto():
 def main():
     global last_update_id
 
-    print("🚀 BOT PRO INICIADO")
-    enviar("🤖 BOT PRO ATIVO")
+    print("🚀 BOT INICIADO")
+    enviar("🤖 BOT ATIVO COM SUCESSO")
 
     while True:
         try:
@@ -289,6 +242,7 @@ def main():
                         enviar(analisar(h.strip(), a.strip()))
                     except:
                         enviar("⚠️ Use: time x time")
+
                 else:
                     enviar("⚠️ Use: time x time")
 
