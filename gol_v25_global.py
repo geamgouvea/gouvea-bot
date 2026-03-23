@@ -12,9 +12,9 @@ API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
 
 HEADERS = {"x-apisports-key": API_KEY}
 
-AUTO_INTERVALO = 1800  # 30 minutos
+AUTO_INTERVALO = 1800
 JANELA_MIN = 20
-JANELA_MAX = 720  # 12 HORAS
+JANELA_MAX = 720
 
 enviados_ids = set()
 last_update_id = None
@@ -25,7 +25,7 @@ def normalizar(nome):
     nome = unicodedata.normalize('NFKD', nome)
     return nome.encode('ASCII', 'ignore').decode('ASCII')
 
-# ================= SIMILARIDADE =================
+# ================= SIMILAR =================
 def similar(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
@@ -49,22 +49,18 @@ def enviar(msg):
     except:
         pass
 
-# ================= BUSCAR FIXTURE GLOBAL =================
-def buscar_fixture_global(home, away):
+# ================= BUSCAR FIXTURE =================
+def buscar_fixture(home, away):
     home_n = normalizar(home)
     away_n = normalizar(away)
 
     melhor = None
     melhor_score = 0
 
-    # SEM LIMITE DE DATA (até 30 dias)
     for i in range(30):
         data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
 
-        data = req("https://v3.football.api-sports.io/fixtures", {
-            "date": data_busca
-        })
-
+        data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
         if not data:
             continue
 
@@ -74,17 +70,13 @@ def buscar_fixture_global(home, away):
 
             score = (similar(home_n, h) + similar(away_n, a)) / 2
             score_inv = (similar(home_n, a) + similar(away_n, h)) / 2
-
             final = max(score, score_inv)
 
             if final > melhor_score:
                 melhor_score = final
                 melhor = j
 
-    if melhor_score >= 0.65:
-        return melhor
-
-    return None
+    return melhor if melhor_score >= 0.65 else None
 
 # ================= HISTÓRICO =================
 def historico(team_id):
@@ -94,11 +86,35 @@ def historico(team_id):
     })
     return data.get("response", []) if data else []
 
+# ================= DECISÃO INTELIGENTE =================
+def escolher_mercado(media, probs):
+
+    over15 = probs["Over 1.5"]
+    over25 = probs["Over 2.5"]
+    under25 = probs["Under 2.5"]
+    btts = probs["Ambas Marcam"]
+
+    # 🔥 PRIORIDADE REAL (equilíbrio)
+    if media >= 2.8 and over25 >= 0.65:
+        return "Over 2.5", over25
+
+    if btts >= 0.70:
+        return "Ambas Marcam", btts
+
+    if media <= 2.2 and under25 >= 0.65:
+        return "Under 2.5", under25
+
+    if over15 >= 0.75:
+        return "Over 1.5", over15
+
+    # fallback inteligente
+    melhor = max(probs, key=probs.get)
+    return melhor, probs[melhor]
+
 # ================= ANALISE =================
 def analisar(home, away):
 
-    fixture = buscar_fixture_global(home, away)
-
+    fixture = buscar_fixture(home, away)
     if not fixture:
         return None
 
@@ -108,7 +124,7 @@ def analisar(home, away):
     jogos = historico(home_id) + historico(away_id)
 
     gols = []
-    btts = 0
+    btts_count = 0
 
     for j in jogos:
         g1 = j["goals"]["home"]
@@ -117,38 +133,32 @@ def analisar(home, away):
         if g1 is None or g2 is None:
             continue
 
-        total = g1 + g2
-        gols.append(total)
+        gols.append(g1 + g2)
 
         if g1 > 0 and g2 > 0:
-            btts += 1
+            btts_count += 1
 
     if not gols:
         return None
 
-    total_jogos = len(gols)
-    media = sum(gols) / total_jogos
+    total = len(gols)
+    media = sum(gols) / total
 
     probs = {
-        "Over 1.5": sum(g >= 2 for g in gols) / total_jogos,
-        "Over 2.5": sum(g >= 3 for g in gols) / total_jogos,
-        "Under 2.5": sum(g <= 2 for g in gols) / total_jogos,
-        "Ambas Marcam": btts / total_jogos
+        "Over 1.5": sum(g >= 2 for g in gols) / total,
+        "Over 2.5": sum(g >= 3 for g in gols) / total,
+        "Under 2.5": sum(g <= 2 for g in gols) / total,
+        "Ambas Marcam": btts_count / total
     }
 
-    melhor = max(probs, key=probs.get)
-    prob = probs[melhor]
+    melhor, prob = escolher_mercado(media, probs)
 
     dt = datetime.fromisoformat(
         fixture["fixture"]["date"].replace("Z", "+00:00")
     ) - timedelta(hours=4)
 
-    data_txt = dt.strftime("%d/%m")
-    hora = dt.strftime("%H:%M")
-
     liga = f'{fixture["league"]["name"]} ({fixture["league"]["country"]})'
 
-    # CLASSIFICAÇÃO
     if prob >= 0.80:
         nivel = "🔥 FORTE"
     elif prob >= 0.70:
@@ -161,8 +171,8 @@ def analisar(home, away):
 
 ⚽ {fixture["teams"]["home"]["name"]} x {fixture["teams"]["away"]["name"]}
 🏆 {liga}
-📅 {data_txt}
-⏰ {hora}
+📅 {dt.strftime("%d/%m")}
+⏰ {dt.strftime("%H:%M")}
 
 🎯 {melhor}
 📊 {int(prob*100)}%
@@ -181,13 +191,10 @@ def auto():
             agora = datetime.utcnow() - timedelta(hours=4)
             candidatos = []
 
-            for i in range(2):  # hoje + amanhã
+            for i in range(2):
                 data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
 
-                data = req("https://v3.football.api-sports.io/fixtures", {
-                    "date": data_busca
-                })
-
+                data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
                 if not data:
                     continue
 
@@ -198,10 +205,9 @@ def auto():
                     if fid in enviados_ids:
                         continue
 
-                    nome_liga = j["league"]["name"].lower()
+                    liga_nome = j["league"]["name"].lower()
 
-                    # BLOQUEAR feminino e base
-                    if any(x in nome_liga for x in ["women", "feminine", "u20", "u21"]):
+                    if any(x in liga_nome for x in ["women", "u20", "u21"]):
                         continue
 
                     dt = datetime.fromisoformat(
@@ -223,7 +229,6 @@ def auto():
 
                     candidatos.append(res)
 
-            # ordenar pelos melhores
             candidatos.sort(key=lambda x: x["prob"], reverse=True)
 
             enviados = 0
