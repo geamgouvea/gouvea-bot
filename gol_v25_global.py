@@ -24,8 +24,6 @@ def req(url, params=None):
         r = requests.get(url, headers=HEADERS, params=params, timeout=10)
         if r.status_code == 200:
             return r.json()
-        else:
-            print("ERRO API:", r.status_code)
     except Exception as e:
         print("ERRO REQUEST:", e)
     return None
@@ -145,18 +143,22 @@ def analisar(home, away):
 
         fixture = buscar_fixture(home, away)
 
-        if not fixture:
-            return "❌ Jogo não encontrado no momento"
+        # SE NÃO ACHAR JOGO → NÃO TRAVA MAIS
+        if fixture:
+            liga = fixture["league"]["name"]
 
-        liga = fixture["league"]["name"]
+            dt = datetime.fromisoformat(
+                fixture["fixture"]["date"].replace("Z","+00:00")
+            )
+            hora = dt.strftime("%H:%M")
 
-        dt = datetime.fromisoformat(
-            fixture["fixture"]["date"].replace("Z","+00:00")
-        )
-        hora = dt.strftime("%H:%M")
-
-        home_nome = fixture["teams"]["home"]["name"]
-        away_nome = fixture["teams"]["away"]["name"]
+            home_nome = fixture["teams"]["home"]["name"]
+            away_nome = fixture["teams"]["away"]["name"]
+        else:
+            liga = "Estimativa"
+            hora = "--:--"
+            home_nome = home
+            away_nome = away
 
         return f"""🔥 SINAL PRO
 
@@ -185,24 +187,23 @@ def auto():
                 enviados = 0
 
                 for j in data.get("response", []):
-                    try:
-                        home = j["teams"]["home"]["name"]
-                        away = j["teams"]["away"]["name"]
+                    home = j["teams"]["home"]["name"]
+                    away = j["teams"]["away"]["name"]
 
-                        liga = j["league"]["name"]
+                    liga = j["league"]["name"]
 
-                        dt = datetime.fromisoformat(
-                            j["fixture"]["date"].replace("Z","+00:00")
-                        )
-                        hora = dt.strftime("%H:%M")
+                    dt = datetime.fromisoformat(
+                        j["fixture"]["date"].replace("Z","+00:00")
+                    )
+                    hora = dt.strftime("%H:%M")
 
-                        res = analisar(home, away)
+                    res = analisar(home, away)
 
-                        if "📊" in res:
-                            prob = int(res.split("📊 ")[1].split("%")[0])
+                    if "📊" in res:
+                        prob = int(res.split("📊 ")[1].split("%")[0])
 
-                            if prob >= 75:
-                                mensagem = f"""🤖 AUTO
+                        if prob >= 75:
+                            mensagem = f"""🤖 AUTO
 
 🔥 SINAL PRO
 
@@ -212,14 +213,11 @@ def auto():
 
 {res.split("🎯")[1]}"""
 
-                                enviar(mensagem)
-                                enviados += 1
+                            enviar(mensagem)
+                            enviados += 1
 
-                        if enviados >= 3:
-                            break
-
-                    except Exception as e:
-                        print("ERRO JOGO:", e)
+                    if enviados >= 3:
+                        break
 
         except Exception as e:
             print("ERRO AUTO:", e)
