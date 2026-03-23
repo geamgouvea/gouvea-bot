@@ -12,9 +12,9 @@ API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
 
 HEADERS = {"x-apisports-key": API_KEY}
 
-AUTO_INTERVALO = 1800
-JANELA_MIN = 20
-JANELA_MAX = 720
+AUTO_INTERVALO = 1800  # 30 min
+JANELA_MIN = 10        # mínimo antes do jogo
+JANELA_MAX = 720       # até 12h
 
 enviados_ids = set()
 last_update_id = None
@@ -25,7 +25,6 @@ def normalizar(nome):
     nome = unicodedata.normalize('NFKD', nome)
     return nome.encode('ASCII', 'ignore').decode('ASCII')
 
-# ================= SIMILAR =================
 def similar(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
@@ -35,8 +34,8 @@ def req(url, params=None):
         r = requests.get(url, headers=HEADERS, params=params, timeout=10)
         if r.status_code == 200:
             return r.json()
-    except:
-        pass
+    except Exception as e:
+        enviar(f"❌ ERRO API: {e}")
     return None
 
 # ================= TELEGRAM =================
@@ -76,7 +75,7 @@ def buscar_fixture(home, away):
                 melhor_score = final
                 melhor = j
 
-    return melhor if melhor_score >= 0.65 else None
+    return melhor if melhor_score >= 0.6 else None
 
 # ================= HISTÓRICO =================
 def historico(team_id):
@@ -86,28 +85,21 @@ def historico(team_id):
     })
     return data.get("response", []) if data else []
 
-# ================= DECISÃO INTELIGENTE =================
+# ================= DECISÃO =================
 def escolher_mercado(media, probs):
 
-    over15 = probs["Over 1.5"]
-    over25 = probs["Over 2.5"]
-    under25 = probs["Under 2.5"]
-    btts = probs["Ambas Marcam"]
+    if media >= 2.8 and probs["Over 2.5"] >= 0.65:
+        return "Over 2.5", probs["Over 2.5"]
 
-    # 🔥 PRIORIDADE REAL (equilíbrio)
-    if media >= 2.8 and over25 >= 0.65:
-        return "Over 2.5", over25
+    if probs["Ambas Marcam"] >= 0.70:
+        return "Ambas Marcam", probs["Ambas Marcam"]
 
-    if btts >= 0.70:
-        return "Ambas Marcam", btts
+    if media <= 2.2 and probs["Under 2.5"] >= 0.65:
+        return "Under 2.5", probs["Under 2.5"]
 
-    if media <= 2.2 and under25 >= 0.65:
-        return "Under 2.5", under25
+    if probs["Over 1.5"] >= 0.70:
+        return "Over 1.5", probs["Over 1.5"]
 
-    if over15 >= 0.75:
-        return "Over 1.5", over15
-
-    # fallback inteligente
     melhor = max(probs, key=probs.get)
     return melhor, probs[melhor]
 
@@ -124,7 +116,7 @@ def analisar(home, away):
     jogos = historico(home_id) + historico(away_id)
 
     gols = []
-    btts_count = 0
+    btts = 0
 
     for j in jogos:
         g1 = j["goals"]["home"]
@@ -133,12 +125,13 @@ def analisar(home, away):
         if g1 is None or g2 is None:
             continue
 
-        gols.append(g1 + g2)
+        total = g1 + g2
+        gols.append(total)
 
         if g1 > 0 and g2 > 0:
-            btts_count += 1
+            btts += 1
 
-    if not gols:
+    if len(gols) < 5:
         return None
 
     total = len(gols)
@@ -148,7 +141,7 @@ def analisar(home, away):
         "Over 1.5": sum(g >= 2 for g in gols) / total,
         "Over 2.5": sum(g >= 3 for g in gols) / total,
         "Under 2.5": sum(g <= 2 for g in gols) / total,
-        "Ambas Marcam": btts_count / total
+        "Ambas Marcam": btts / total
     }
 
     melhor, prob = escolher_mercado(media, probs)
@@ -157,14 +150,14 @@ def analisar(home, away):
         fixture["fixture"]["date"].replace("Z", "+00:00")
     ) - timedelta(hours=4)
 
-    liga = f'{fixture["league"]["name"]} ({fixture["league"]["country"]})'
-
     if prob >= 0.80:
         nivel = "🔥 FORTE"
     elif prob >= 0.70:
         nivel = "⚖️ MÉDIA"
     else:
         nivel = "⚠️ RISCO"
+
+    liga = f'{fixture["league"]["name"]} ({fixture["league"]["country"]})'
 
     return {
         "msg": f"""🔎 ANÁLISE
@@ -205,11 +198,6 @@ def auto():
                     if fid in enviados_ids:
                         continue
 
-                    liga_nome = j["league"]["name"].lower()
-
-                    if any(x in liga_nome for x in ["women", "u20", "u21"]):
-                        continue
-
                     dt = datetime.fromisoformat(
                         j["fixture"]["date"].replace("Z", "+00:00")
                     ) - timedelta(hours=4)
@@ -233,16 +221,16 @@ def auto():
 
             enviados = 0
 
-            for c in candidatos:
-                if enviados >= 5:
-                    break
-
+            for c in candidatos[:5]:
                 enviar("🤖 AUTO\n\n🔥 SINAL\n\n" + c["msg"])
                 enviados_ids.add(c["fixture_id"])
                 enviados += 1
 
-        except:
-            pass
+            if enviados == 0:
+                enviar("⚠️ AUTO: Nenhum jogo qualificado agora")
+
+        except Exception as e:
+            enviar(f"❌ ERRO AUTO: {e}")
 
         time.sleep(AUTO_INTERVALO)
 
@@ -286,8 +274,8 @@ def main():
                 else:
                     enviar("⚠️ Use: time x time")
 
-        except:
-            pass
+        except Exception as e:
+            enviar(f"❌ ERRO BOT: {e}")
 
         time.sleep(3)
 
