@@ -11,14 +11,14 @@ CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
 HEADERS = {"x-apisports-key": API_KEY}
 
-AUTO_INTERVALO = 1800  # 30 min
+AUTO_INTERVALO = 1800
 JANELA_MIN = 10
 JANELA_MAX = 720
 
 enviados_ids = set()
 last_update_id = None
 
-# ================= DATA FIX (DEFINITIVO) =================
+# ================= DATA (100% FIX) =================
 def parse_data(data_str):
     try:
         dt = datetime.fromisoformat(data_str.replace("Z", "+00:00"))
@@ -55,7 +55,7 @@ def enviar(msg):
     except:
         pass
 
-# ================= BUSCAR FIXTURE =================
+# ================= BUSCAR FIXTURE (MAIS PRECISO) =================
 def buscar_fixture(home, away):
     home_n = normalizar(home)
     away_n = normalizar(away)
@@ -63,7 +63,7 @@ def buscar_fixture(home, away):
     melhor = None
     melhor_score = 0
 
-    for i in range(60):  # busca ampla (2 meses)
+    for i in range(60):
         data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
 
         data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
@@ -83,7 +83,10 @@ def buscar_fixture(home, away):
                 melhor_score = final
                 melhor = j
 
-    return melhor if melhor_score >= 0.6 else None
+    if melhor_score < 0.65:
+        return None
+
+    return melhor
 
 # ================= HISTÓRICO =================
 def historico(team_id):
@@ -93,21 +96,26 @@ def historico(team_id):
     })
     return data.get("response", []) if data else []
 
-# ================= ESCOLHA DE MERCADO =================
+# ================= ESCOLHA INTELIGENTE =================
 def escolher_mercado(media, probs):
 
-    if media >= 2.8 and probs["Over 2.5"] >= 0.65:
+    # 🔥 Over 2.5 prioridade alta
+    if media >= 2.9 and probs["Over 2.5"] >= 0.65:
         return "Over 2.5", probs["Over 2.5"]
 
-    if probs["Ambas Marcam"] >= 0.70:
+    # 🔥 BTTS forte
+    if probs["Ambas Marcam"] >= 0.72 and media >= 2.4:
         return "Ambas Marcam", probs["Ambas Marcam"]
 
-    if media <= 2.2 and probs["Under 2.5"] >= 0.65:
+    # 🔒 Under
+    if media <= 2.1 and probs["Under 2.5"] >= 0.68:
         return "Under 2.5", probs["Under 2.5"]
 
-    if probs["Over 1.5"] >= 0.70:
+    # ⚖️ Over 1.5 controlado
+    if probs["Over 1.5"] >= 0.75:
         return "Over 1.5", probs["Over 1.5"]
 
+    # fallback
     melhor = max(probs, key=probs.get)
     return melhor, probs[melhor]
 
@@ -139,7 +147,7 @@ def analisar(home, away):
         if g1 > 0 and g2 > 0:
             btts += 1
 
-    if len(gols) < 5:
+    if len(gols) < 6:
         return None
 
     total = len(gols)
@@ -183,18 +191,17 @@ def analisar(home, away):
 
 {nivel}""",
         "prob": prob,
-        "fixture_id": fixture["fixture"]["id"],
-        "hora": dt
+        "fixture_id": fixture["fixture"]["id"]
     }
 
-# ================= AUTO =================
+# ================= AUTO (MELHORADO) =================
 def auto():
     while True:
         try:
             agora = datetime.utcnow()
             candidatos = []
 
-            for i in range(2):
+            for i in range(3):  # 🔥 mais dias
                 data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
 
                 data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
@@ -237,7 +244,7 @@ def auto():
                 enviados += 1
 
             if enviados == 0:
-                enviar("⚠️ AUTO: Nenhum jogo qualificado agora")
+                enviar("⚠️ AUTO: Nenhum jogo qualificado")
 
         except Exception as e:
             enviar(f"❌ ERRO AUTO: {e}")
@@ -284,8 +291,8 @@ def main():
                 else:
                     enviar("⚠️ Use: time x time")
 
-        except Exception as e:
-            enviar(f"❌ ERRO BOT: {e}")
+        except:
+            pass
 
         time.sleep(3)
 
