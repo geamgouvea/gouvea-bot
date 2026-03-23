@@ -1,10 +1,10 @@
 import requests
 import time
 import threading
-import re
 from datetime import datetime, timedelta
 import unicodedata
 from difflib import SequenceMatcher
+import re
 
 # ================= CONFIG =================
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
@@ -13,8 +13,8 @@ API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
 
 HEADERS = {"x-apisports-key": API_KEY}
 
-DIAS_BUSCA = 7
-AUTO_INTERVALO = 1200  # 20 min
+DIAS_BUSCA = 5
+AUTO_INTERVALO = 1200
 
 enviados_ids = set()
 last_update_id = 0
@@ -35,8 +35,8 @@ def req(url, params=None):
         r = requests.get(url, headers=HEADERS, params=params, timeout=10)
         if r.status_code == 200:
             return r.json()
-    except:
-        pass
+    except Exception as e:
+        print("Erro API:", e)
     return None
 
 # ================= TELEGRAM =================
@@ -46,8 +46,8 @@ def enviar(msg):
             f"https://api.telegram.org/bot{TOKEN}/sendMessage",
             data={"chat_id": CHAT_ID, "text": msg}
         )
-    except:
-        pass
+    except Exception as e:
+        print("Erro Telegram:", e)
 
 # ================= EXTRAIR TIMES =================
 def extrair_times(texto):
@@ -64,18 +64,18 @@ def buscar_time(nome):
     if not data or not data.get("response"):
         return None
 
-    melhor_id = None
-    melhor_score = 0
+    melhor = None
+    score = 0
 
     for t in data["response"]:
         nome_api = normalizar(t["team"]["name"])
-        score = similar(nome_norm, nome_api)
+        s = similar(nome_norm, nome_api)
 
-        if score > melhor_score:
-            melhor_score = score
-            melhor_id = t["team"]["id"]
+        if s > score:
+            score = s
+            melhor = t["team"]["id"]
 
-    return melhor_id if melhor_score > 0.5 else None
+    return melhor if score > 0.5 else None
 
 # ================= HISTÓRICO =================
 def historico(team_id):
@@ -110,15 +110,15 @@ def buscar_fixture(home, away):
             score = (similar(home_n, h) + similar(away_n, a)) / 2
             score_inv = (similar(home_n, a) + similar(away_n, h)) / 2
 
-            score_final = max(score, score_inv)
+            final = max(score, score_inv)
 
-            if score_final > melhor_score:
-                melhor_score = score_final
+            if final > melhor_score:
+                melhor_score = final
                 melhor = j
 
     return melhor if melhor_score > 0.5 else None
 
-# ================= ANALISAR =================
+# ================= ANALISE =================
 def analisar(home, away):
     fixture = buscar_fixture(home, away)
 
@@ -131,6 +131,7 @@ def analisar(home, away):
 
     agora = datetime.utcnow() - timedelta(hours=4)
 
+    # só pré-jogo
     if dt <= agora:
         return "❌ Jogo já iniciado"
 
@@ -149,8 +150,7 @@ def analisar(home, away):
         if g1 is None or g2 is None:
             continue
 
-        total = g1 + g2
-        gols.append(total)
+        gols.append(g1 + g2)
 
         if g1 > 0 and g2 > 0:
             btts += 1
@@ -169,16 +169,6 @@ def analisar(home, away):
 
     melhor = max(probs, key=probs.get)
     prob = probs[melhor]
-
-    # filtro profissional
-    if melhor == "Over 1.5" and (prob < 0.8 or media < 2.8):
-        return None
-    if melhor == "Over 2.5" and (prob < 0.72 or media < 2.4):
-        return None
-    if melhor == "Under 2.5" and (prob < 0.72 or media > 2.2):
-        return None
-    if melhor == "Ambas Marcam" and prob < 0.7:
-        return None
 
     return f"""🔎 ANÁLISE
 
@@ -228,6 +218,7 @@ def auto():
                     agora = datetime.utcnow() - timedelta(hours=4)
                     diff = (dt - agora).total_seconds() / 60
 
+                    # janela mais estável
                     if diff < 20 or diff > 240:
                         continue
 
@@ -236,7 +227,7 @@ def auto():
                     if not res or "❌" in res:
                         continue
 
-                    enviar("🤖 AUTO\n\n🔥 SINAL ELITE\n\n" + res)
+                    enviar("🤖 AUTO\n\n🔥 SINAL\n\n" + res)
 
                     enviados_ids.add(fid)
                     enviados += 1
@@ -247,8 +238,8 @@ def auto():
                 if enviados >= 5:
                     break
 
-        except:
-            pass
+        except Exception as e:
+            print("Erro AUTO:", e)
 
         time.sleep(AUTO_INTERVALO)
 
@@ -286,8 +277,8 @@ def main():
                 else:
                     enviar("🧠 MANUAL\n\n" + res)
 
-        except:
-            pass
+        except Exception as e:
+            print("Erro MAIN:", e)
 
         time.sleep(3)
 
