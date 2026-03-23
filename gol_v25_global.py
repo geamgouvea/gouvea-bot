@@ -35,8 +35,8 @@ def req(url, params=None):
         r = requests.get(url, headers=HEADERS, params=params, timeout=10)
         if r.status_code == 200:
             return r.json()
-    except Exception as e:
-        print("Erro request:", e)
+    except:
+        pass
     return None
 
 # ================= TELEGRAM =================
@@ -47,8 +47,8 @@ def enviar(msg):
             data={"chat_id": CHAT_ID, "text": msg},
             timeout=10
         )
-    except Exception as e:
-        print("Erro Telegram:", e)
+    except:
+        pass
 
 # ================= BUSCAR TIME =================
 def buscar_time(nome):
@@ -68,11 +68,14 @@ def buscar_time(nome):
         nome_api = normalizar(t["team"]["name"])
         score = similar(nome_n, nome_api)
 
+        if nome_n in nome_api or nome_api in nome_n:
+            score += 0.2
+
         if score > melhor_score:
             melhor_score = score
             melhor = t["team"]["id"]
 
-    return melhor if melhor_score > 0.45 else None
+    return melhor if melhor_score > 0.40 else None
 
 # ================= HISTÓRICO =================
 def historico(team_id):
@@ -112,11 +115,10 @@ def buscar_fixture(home, away, dias):
                 melhor_score = score
                 melhor = j
 
-    # 🔥 mais rígido pra evitar jogo errado
-    return melhor if melhor_score > 0.70 else None
+    return melhor if melhor_score > 0.65 else None
 
 # ================= ANALISE =================
-def analisar(home, away, dias):
+def analisar(home, away, dias, modo="manual"):
     home_id = buscar_time(home)
     away_id = buscar_time(away)
 
@@ -141,7 +143,7 @@ def analisar(home, away, dias):
             btts += 1
 
     if not gols:
-        return "❌ Sem dados suficientes"
+        return "❌ Sem dados"
 
     total = len(gols)
     media = sum(gols) / total
@@ -156,20 +158,21 @@ def analisar(home, away, dias):
     melhor = max(probs, key=probs.get)
     prob = probs[melhor]
 
-    # filtro equilibrado
-    if melhor == "Over 1.5" and (prob < 0.72 or media < 2.4):
-        return "❌ Nenhuma entrada de valor"
-    if melhor == "Over 2.5" and prob < 0.70:
-        return "❌ Nenhuma entrada de valor"
-    if melhor == "Under 2.5" and prob < 0.70:
-        return "❌ Nenhuma entrada de valor"
-    if melhor == "Ambas Marcam" and prob < 0.65:
-        return "❌ Nenhuma entrada de valor"
+    # 🔥 AQUI MUDA TUDO
+    if modo == "auto":
+        if melhor == "Over 1.5" and (prob < 0.75 or media < 2.5):
+            return None
+        if melhor == "Over 2.5" and prob < 0.70:
+            return None
+        if melhor == "Under 2.5" and prob < 0.70:
+            return None
+        if melhor == "Ambas Marcam" and prob < 0.65:
+            return None
 
     fixture = buscar_fixture(home, away, dias)
 
     if not fixture:
-        return "❌ Jogo não encontrado com precisão"
+        return "❌ Jogo não encontrado"
 
     liga = f"{fixture['league']['name']} ({fixture['league']['country']})"
 
@@ -230,9 +233,9 @@ def auto():
                     if diff < 20 or diff > 1440:
                         continue
 
-                    res = analisar(h, a, DIAS_BUSCA_AUTO)
+                    res = analisar(h, a, DIAS_BUSCA_AUTO, modo="auto")
 
-                    if "❌" in res:
+                    if not res:
                         continue
 
                     enviar("🤖 AUTO\n\n🔥 SINAL\n\n" + res)
@@ -249,8 +252,8 @@ def auto():
             if enviados == 0:
                 enviar("🤖 AUTO\n\n⚠️ Nenhum jogo de valor encontrado")
 
-        except Exception as e:
-            print("Erro AUTO:", e)
+        except:
+            pass
 
         time.sleep(AUTO_INTERVALO)
 
@@ -258,12 +261,16 @@ def auto():
 def manual(texto):
     try:
         texto = texto.lower().replace(" vs ", " x ").replace(" X ", " x ")
-        h, a = texto.split("x")
 
-        return "🧠 MANUAL\n\n" + analisar(h.strip(), a.strip(), DIAS_BUSCA_MANUAL)
+        if " x " not in texto:
+            return "⚠️ Use: time x time"
+
+        h, a = texto.split(" x ")
+
+        return "🧠 MANUAL\n\n" + analisar(h.strip(), a.strip(), DIAS_BUSCA_MANUAL, modo="manual")
 
     except:
-        return "⚠️ Use: time x time"
+        return "⚠️ Erro. Use: time x time"
 
 # ================= MAIN =================
 def main():
@@ -292,8 +299,8 @@ def main():
                 else:
                     enviar("⚠️ Use: time x time")
 
-        except Exception as e:
-            print("Erro MAIN:", e)
+        except:
+            pass
 
         time.sleep(3)
 
