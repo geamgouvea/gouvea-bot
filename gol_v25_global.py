@@ -3,7 +3,6 @@ import time
 import threading
 from datetime import datetime, timedelta
 import unicodedata
-from difflib import SequenceMatcher
 
 # ================= CONFIG =================
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
@@ -12,7 +11,7 @@ API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
 
 HEADERS = {"x-apisports-key": API_KEY}
 
-DIAS_BUSCA = 3
+DIAS_BUSCA = 5
 AUTO_INTERVALO = 1200  # 20 minutos
 
 enviados_ids = set()
@@ -23,10 +22,6 @@ def normalizar(nome):
     nome = nome.lower().strip()
     nome = unicodedata.normalize('NFKD', nome)
     return nome.encode('ASCII', 'ignore').decode('ASCII')
-
-# ================= SIMILARIDADE =================
-def similar(a, b):
-    return SequenceMatcher(None, a, b).ratio()
 
 # ================= REQUEST =================
 def req(url, params=None):
@@ -48,27 +43,27 @@ def enviar(msg):
     except:
         pass
 
-# ================= BUSCAR TIME (INTELIGENTE) =================
+# ================= COMPARAÇÃO INTELIGENTE =================
+def comparar_times(input_nome, api_nome):
+    input_nome = normalizar(input_nome)
+    api_nome = normalizar(api_nome)
+
+    palavras_input = input_nome.split()
+    palavras_api = api_nome.split()
+
+    matches = sum(1 for p in palavras_input if p in palavras_api)
+
+    return matches >= 1
+
+# ================= BUSCAR TIME =================
 def buscar_time(nome):
-    nome_norm = normalizar(nome)
-    data = req("https://v3.football.api-sports.io/teams", {"search": nome_norm})
+    nome = normalizar(nome)
+    busca = nome.split()[0]
 
-    if not data or not data.get("response"):
-        return None
+    data = req("https://v3.football.api-sports.io/teams", {"search": busca})
 
-    melhor = None
-    score = 0
-
-    for t in data["response"]:
-        nome_api = normalizar(t["team"]["name"])
-        s = similar(nome_norm, nome_api)
-
-        if s > score:
-            score = s
-            melhor = t["team"]["id"]
-
-    if score > 0.5:
-        return melhor
+    if data and data.get("response"):
+        return data["response"][0]["team"]["id"]
 
     return None
 
@@ -80,14 +75,8 @@ def historico(team_id):
     })
     return data.get("response", []) if data else []
 
-# ================= BUSCAR FIXTURE (INTELIGENTE) =================
+# ================= BUSCAR FIXTURE =================
 def buscar_fixture(home, away):
-    home_n = normalizar(home)
-    away_n = normalizar(away)
-
-    melhor_jogo = None
-    melhor_score = 0
-
     for i in range(DIAS_BUSCA):
         data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
 
@@ -99,32 +88,27 @@ def buscar_fixture(home, away):
             continue
 
         for j in data.get("response", []):
-            h = normalizar(j["teams"]["home"]["name"])
-            a = normalizar(j["teams"]["away"]["name"])
+            h = j["teams"]["home"]["name"]
+            a = j["teams"]["away"]["name"]
 
-            score = (similar(home_n, h) + similar(away_n, a)) / 2
-
-            # tenta invertido também
-            score_inv = (similar(home_n, a) + similar(away_n, h)) / 2
-
-            score_final = max(score, score_inv)
-
-            if score_final > melhor_score:
-                melhor_score = score_final
-                melhor_jogo = j
-
-    if melhor_score > 0.6:
-        return melhor_jogo
+            if (comparar_times(home, h) and comparar_times(away, a)) or \
+               (comparar_times(home, a) and comparar_times(away, h)):
+                return j
 
     return None
 
 # ================= ANALISE =================
 def analisar(home, away):
-    home_id = buscar_time(home)
-    away_id = buscar_time(away)
+    fixture = buscar_fixture(home, away)
 
-    if not home_id or not away_id:
-        return "❌ Times não encontrados"
+    if not fixture:
+        return "❌ Jogo não encontrado para os próximos dias"
+
+    home_api = fixture["teams"]["home"]["name"]
+    away_api = fixture["teams"]["away"]["name"]
+
+    home_id = fixture["teams"]["home"]["id"]
+    away_id = fixture["teams"]["away"]["id"]
 
     jogos = historico(home_id) + historico(away_id)
 
@@ -145,7 +129,7 @@ def analisar(home, away):
             btts += 1
 
     if not gols:
-        return "❌ Sem dados"
+        return "❌ Sem dados suficientes"
 
     total_jogos = len(gols)
     media = sum(gols) / total_jogos
@@ -160,36 +144,35 @@ def analisar(home, away):
     melhor = max(probs, key=probs.get)
     prob = probs[melhor]
 
-    # correção Over 1.5 fraco
+    # filtro profissional
     if melhor == "Over 1.5" and (prob < 0.8 or media < 2.8):
-        if probs["Over 2.5"] > 0.7:
-            melhor = "Over 2.5"
-            prob = probs[melhor]
-        else:
-            melhor = "Ambas Marcam"
-            prob = probs[melhor]
+        return None
+    if melhor == "Over 2.5" and (prob < 0.72 or media < 2.4):
+        return None
+    if melhor == "Under 2.5" and (prob < 0.72 or media > 2.2):
+        return None
+    if melhor == "Ambas Marcam" and prob < 0.65:
+        return None
 
-    fixture = buscar_fixture(home, away)
+    # data e hora
+    dt = datetime.fromisoformat(
+        fixture["fixture"]["date"].replace("Z", "+00:00")
+    )
 
-    liga = "Estimativa"
-    data_txt = "--/--"
-    hora = "--:--"
+    # converter UTC → Brasil (-4h)
+    dt = dt - timedelta(hours=4)
 
-    if fixture:
-        liga = fixture["league"]["name"]
+    # NÃO ENVIAR jogo já iniciado
+    if dt <= datetime.utcnow() - timedelta(hours=4):
+        return None
 
-        dt = datetime.fromisoformat(
-            fixture["fixture"]["date"].replace("Z", "+00:00")
-        )
-
-        dt = dt - timedelta(hours=4)
-
-        data_txt = dt.strftime("%d/%m")
-        hora = dt.strftime("%H:%M")
+    data_txt = dt.strftime("%d/%m")
+    hora = dt.strftime("%H:%M")
+    liga = fixture["league"]["name"]
 
     return f"""🔎 ANÁLISE
 
-⚽ {home} x {away}
+⚽ {home_api} x {away_api}
 🏆 {liga}
 📅 {data_txt}
 ⏰ {hora}
@@ -223,26 +206,9 @@ def auto():
                     h = j["teams"]["home"]["name"]
                     a = j["teams"]["away"]["name"]
 
-                    # bloquear categorias ruins
-                    if any(x in h.lower() for x in ["u21", "u20", "women"]) or \
-                       any(x in a.lower() for x in ["u21", "u20", "women"]):
-                        continue
-
-                    dt = datetime.fromisoformat(
-                        j["fixture"]["date"].replace("Z", "+00:00")
-                    ) - timedelta(hours=4)
-
-                    agora = datetime.utcnow() - timedelta(hours=4)
-
-                    diff = (dt - agora).total_seconds() / 60
-
-                    # só pré-jogo (30 a 180 minutos)
-                    if diff < 30 or diff > 180:
-                        continue
-
                     res = analisar(h, a)
 
-                    if "❌" in res:
+                    if not res:
                         continue
 
                     enviar("🤖 AUTO\n\n🔥 SINAL ELITE\n\n" + res)
@@ -260,14 +226,6 @@ def auto():
             pass
 
         time.sleep(AUTO_INTERVALO)
-
-# ================= MANUAL =================
-def manual(texto):
-    try:
-        h, a = texto.split("x")
-        return "🧠 MANUAL\n\n" + analisar(h.strip(), a.strip())
-    except:
-        return "⚠️ Use: time x time"
 
 # ================= MAIN =================
 def main():
@@ -291,7 +249,17 @@ def main():
                 texto = u["message"].get("text", "").lower()
 
                 if "x" in texto:
-                    enviar(manual(texto))
+                    try:
+                        h, a = texto.split("x")
+                        res = analisar(h.strip(), a.strip())
+
+                        if not res:
+                            enviar("❌ Sem valor ou jogo inválido")
+                        else:
+                            enviar("🧠 MANUAL\n\n" + res)
+
+                    except:
+                        enviar("⚠️ Use: time x time")
                 else:
                     enviar("⚠️ Use: time x time")
 
