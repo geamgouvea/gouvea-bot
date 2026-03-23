@@ -9,7 +9,6 @@ from difflib import SequenceMatcher
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
-
 HEADERS = {"x-apisports-key": API_KEY}
 
 AUTO_INTERVALO = 1800  # 30 min
@@ -146,9 +145,13 @@ def analisar(home, away):
 
     melhor, prob = escolher_mercado(media, probs)
 
-    dt = datetime.fromisoformat(
-        fixture["fixture"]["date"].replace("Z", "+00:00")
-    ) - timedelta(hours=4)
+    # ✅ CORREÇÃO DEFINITIVA AQUI (UTC puro)
+    dt = datetime.strptime(
+        fixture["fixture"]["date"], "%Y-%m-%dT%H:%M:%SZ"
+    )
+
+    # converter apenas para exibição
+    dt_local = dt - timedelta(hours=4)
 
     if prob >= 0.80:
         nivel = "🔥 FORTE"
@@ -164,8 +167,8 @@ def analisar(home, away):
 
 ⚽ {fixture["teams"]["home"]["name"]} x {fixture["teams"]["away"]["name"]}
 🏆 {liga}
-📅 {dt.strftime("%d/%m")}
-⏰ {dt.strftime("%H:%M")}
+📅 {dt_local.strftime("%d/%m")}
+⏰ {dt_local.strftime("%H:%M")}
 
 🎯 {melhor}
 📊 {int(prob*100)}%
@@ -181,7 +184,7 @@ def analisar(home, away):
 def auto():
     while True:
         try:
-            agora = datetime.utcnow() - timedelta(hours=4)
+            agora = datetime.utcnow()
             candidatos = []
 
             for i in range(2):
@@ -198,9 +201,10 @@ def auto():
                     if fid in enviados_ids:
                         continue
 
-                    dt = datetime.fromisoformat(
-                        j["fixture"]["date"].replace("Z", "+00:00")
-                    ) - timedelta(hours=4)
+                    # ✅ CORREÇÃO DEFINITIVA
+                    dt = datetime.strptime(
+                        j["fixture"]["date"], "%Y-%m-%dT%H:%M:%SZ"
+                    )
 
                     diff = (dt - agora).total_seconds() / 60
 
