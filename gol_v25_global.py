@@ -52,7 +52,7 @@ def enviar(msg):
 
 # ================= EXTRAIR TIMES =================
 def extrair_times(texto):
-    partes = re.split(r"\s*x\s*", texto.lower())
+    partes = re.split(r"\s*[xX]\s*", texto)
     if len(partes) == 2:
         return partes[0].strip(), partes[1].strip()
     return None, None
@@ -76,7 +76,7 @@ def buscar_time(nome):
             score = s
             melhor = t["team"]["id"]
 
-    return melhor if score > 0.5 else None
+    return melhor if score > 0.4 else None
 
 # ================= HISTÓRICO =================
 def historico(team_id):
@@ -117,15 +117,64 @@ def buscar_fixture(home, away, dias):
                 melhor_score = final
                 melhor = j
 
-    return melhor if melhor_score > 0.5 else None
+    return melhor if melhor_score > 0.35 else None
 
 # ================= ANALISE =================
 def analisar(home, away, dias):
     fixture = buscar_fixture(home, away, dias)
 
+    # ================= SE NÃO ACHAR JOGO =================
     if not fixture:
-        return "❌ Jogo não encontrado"
+        home_id = buscar_time(home)
+        away_id = buscar_time(away)
 
+        if not home_id or not away_id:
+            return "❌ Times não encontrados"
+
+        jogos = historico(home_id) + historico(away_id)
+
+        if len(jogos) < 5:
+            return "❌ Poucos dados"
+
+        gols = []
+        btts = 0
+
+        for j in jogos:
+            g1 = j["goals"]["home"]
+            g2 = j["goals"]["away"]
+
+            if g1 is None or g2 is None:
+                continue
+
+            gols.append(g1 + g2)
+
+            if g1 > 0 and g2 > 0:
+                btts += 1
+
+        media = sum(gols) / len(gols)
+
+        probs = {
+            "Over 1.5": sum(g >= 2 for g in gols) / len(gols),
+            "Over 2.5": sum(g >= 3 for g in gols) / len(gols),
+            "Under 2.5": sum(g <= 2 for g in gols) / len(gols),
+            "Ambas Marcam": btts / len(gols)
+        }
+
+        melhor = max(probs, key=probs.get)
+        prob = probs[melhor]
+
+        return f"""🔎 ANÁLISE (SEM JOGO CONFIRMADO)
+
+⚽ {home} x {away}
+🏆 Estimativa
+📅 --/--
+⏰ --:--
+
+🎯 {melhor}
+📊 {int(prob*100)}%
+📈 Média gols: {round(media,2)}"""
+
+    # ================= SE ACHAR JOGO =================
     dt = datetime.fromisoformat(
         fixture["fixture"]["date"].replace("Z", "+00:00")
     ) - timedelta(hours=4)
@@ -222,7 +271,7 @@ def auto():
 
                     res = analisar(h, a, DIAS_BUSCA_AUTO)
 
-                    if not res or "❌" in res:
+                    if "❌" in res:
                         continue
 
                     enviar("🤖 AUTO\n\n🔥 SINAL\n\n" + res)
@@ -269,11 +318,7 @@ def main():
                     continue
 
                 res = analisar(h, a, DIAS_BUSCA_MANUAL)
-
-                if not res:
-                    enviar("❌ Sem valor")
-                else:
-                    enviar("🧠 MANUAL\n\n" + res)
+                enviar("🧠 MANUAL\n\n" + res)
 
         except Exception as e:
             print("Erro MAIN:", e)
