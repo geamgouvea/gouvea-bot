@@ -9,14 +9,25 @@ from difflib import SequenceMatcher
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
+
 HEADERS = {"x-apisports-key": API_KEY}
 
-AUTO_INTERVALO = 1800  # 30 min
-JANELA_MIN = 10        # mínimo antes do jogo
-JANELA_MAX = 720       # até 12h
+AUTO_INTERVALO = 1800
+JANELA_MIN = 10
+JANELA_MAX = 720
 
 enviados_ids = set()
 last_update_id = None
+
+# ================= DATA FIX (DEFINITIVO) =================
+def parse_data(data_str):
+    try:
+        return datetime.fromisoformat(data_str.replace("Z", ""))
+    except:
+        try:
+            return datetime.strptime(data_str, "%Y-%m-%dT%H:%M:%S")
+        except:
+            return None
 
 # ================= NORMALIZAR =================
 def normalizar(nome):
@@ -145,12 +156,11 @@ def analisar(home, away):
 
     melhor, prob = escolher_mercado(media, probs)
 
-    # ✅ CORREÇÃO DEFINITIVA AQUI (UTC puro)
-    dt = datetime.strptime(
-        fixture["fixture"]["date"], "%Y-%m-%dT%H:%M:%SZ"
-    )
+    # ✅ USO DO PARSER CORRIGIDO
+    dt = parse_data(fixture["fixture"]["date"])
+    if not dt:
+        return None
 
-    # converter apenas para exibição
     dt_local = dt - timedelta(hours=4)
 
     if prob >= 0.80:
@@ -201,10 +211,9 @@ def auto():
                     if fid in enviados_ids:
                         continue
 
-                    # ✅ CORREÇÃO DEFINITIVA
-                    dt = datetime.strptime(
-                        j["fixture"]["date"], "%Y-%m-%dT%H:%M:%SZ"
-                    )
+                    dt = parse_data(j["fixture"]["date"])
+                    if not dt:
+                        continue
 
                     diff = (dt - agora).total_seconds() / 60
 
