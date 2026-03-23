@@ -48,7 +48,6 @@ def buscar_time(nome):
     if data and data.get("response"):
         return data["response"][0]["team"]["id"]
 
-    # fallback nome curto
     nome_curto = nome.split()[0]
     data = req("https://v3.football.api-sports.io/teams", {"search": nome_curto})
     if data and data.get("response"):
@@ -64,12 +63,11 @@ def historico(team_id):
     })
     return data.get("response", []) if data else []
 
-# ================= BUSCAR JOGO GLOBAL =================
+# ================= BUSCAR FIXTURE =================
 def buscar_fixture(home, away):
-    home = normalizar(home)
-    away = normalizar(away)
+    home_n = normalizar(home)
+    away_n = normalizar(away)
 
-    # busca ampla (pega jogos do mundo inteiro)
     data = req("https://v3.football.api-sports.io/fixtures", {"next": 200})
 
     if not data:
@@ -83,12 +81,11 @@ def buscar_fixture(home, away):
         a = normalizar(j["teams"]["away"]["name"])
 
         score = 0
-
-        if home in h or h in home:
+        if home_n in h or h in home_n:
             score += 1
-        if away in a or a in away:
+        if away_n in a or a in away_n:
             score += 1
-        if home in a or away in h:
+        if home_n in a or away_n in h:
             score += 1
 
         if score > score_max:
@@ -144,27 +141,22 @@ def analisar(home, away):
 
         melhor = max(probs, key=probs.get)
         prob = int(probs[melhor] * 100)
+        media = round(sum(gols)/len(gols), 2)
 
         fixture = buscar_fixture(home, away)
 
-        liga = "N/A"
-        hora = "--:--"
-        home_nome = home
-        away_nome = away
+        if not fixture:
+            return "❌ Jogo não encontrado no momento"
 
-        if fixture:
-            try:
-                liga = fixture["league"]["name"]
+        liga = fixture["league"]["name"]
 
-                dt = datetime.fromisoformat(
-                    fixture["fixture"]["date"].replace("Z","+00:00")
-                )
-                hora = dt.strftime("%H:%M")
+        dt = datetime.fromisoformat(
+            fixture["fixture"]["date"].replace("Z","+00:00")
+        )
+        hora = dt.strftime("%H:%M")
 
-                home_nome = fixture["teams"]["home"]["name"]
-                away_nome = fixture["teams"]["away"]["name"]
-            except:
-                pass
+        home_nome = fixture["teams"]["home"]["name"]
+        away_nome = fixture["teams"]["away"]["name"]
 
         return f"""🔥 SINAL PRO
 
@@ -174,9 +166,8 @@ def analisar(home, away):
 
 🎯 {melhor}
 📊 {prob}%
-📈 Média gols: {round(sum(gols)/len(gols),2)}
-
-⚠️ Sem odds (apenas estatística)"""
+📈 Média gols: {media}
+"""
 
     except Exception as e:
         print("ERRO ANALISE:", e)
@@ -194,20 +185,41 @@ def auto():
                 enviados = 0
 
                 for j in data.get("response", []):
-                    home = j["teams"]["home"]["name"]
-                    away = j["teams"]["away"]["name"]
+                    try:
+                        home = j["teams"]["home"]["name"]
+                        away = j["teams"]["away"]["name"]
 
-                    res = analisar(home, away)
+                        liga = j["league"]["name"]
 
-                    if "📊" in res:
-                        prob = int(res.split("📊 ")[1].split("%")[0])
+                        dt = datetime.fromisoformat(
+                            j["fixture"]["date"].replace("Z","+00:00")
+                        )
+                        hora = dt.strftime("%H:%M")
 
-                        if prob >= 75:
-                            enviar("🤖 AUTO\n\n" + res)
-                            enviados += 1
+                        res = analisar(home, away)
 
-                    if enviados >= 3:
-                        break
+                        if "📊" in res:
+                            prob = int(res.split("📊 ")[1].split("%")[0])
+
+                            if prob >= 75:
+                                mensagem = f"""🤖 AUTO
+
+🔥 SINAL PRO
+
+⚽ {home} x {away}
+🏆 {liga}
+⏰ {hora}
+
+{res.split("🎯")[1]}"""
+
+                                enviar(mensagem)
+                                enviados += 1
+
+                        if enviados >= 3:
+                            break
+
+                    except Exception as e:
+                        print("ERRO JOGO:", e)
 
         except Exception as e:
             print("ERRO AUTO:", e)
