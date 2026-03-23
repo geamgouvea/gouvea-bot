@@ -10,8 +10,8 @@ CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
 HEADERS = {"x-apisports-key": API_KEY}
 
-DIAS_BUSCA = 3  # busca jogos hoje + próximos dias
-AUTO_INTERVALO = 1200  # 20 minutos
+DIAS_BUSCA = 3
+AUTO_INTERVALO = 1200
 
 enviados_ids = set()
 last_update_id = None
@@ -20,8 +20,7 @@ last_update_id = None
 def normalizar(nome):
     nome = nome.lower().strip()
     nome = unicodedata.normalize('NFKD', nome)
-    nome = nome.encode('ASCII', 'ignore').decode('ASCII')
-    return nome
+    return nome.encode('ASCII', 'ignore').decode('ASCII')
 
 # ================= REQUEST =================
 def req(url, params=None):
@@ -46,8 +45,8 @@ def enviar(msg):
 # ================= BUSCAR TIME =================
 def buscar_time(nome):
     nome = normalizar(nome)
-
     data = req("https://v3.football.api-sports.io/teams", {"search": nome})
+
     if data and data.get("response"):
         return data["response"][0]["team"]["id"]
 
@@ -61,7 +60,7 @@ def historico(team_id):
     })
     return data.get("response", []) if data else []
 
-# ================= BUSCAR FIXTURE POR DATA =================
+# ================= BUSCAR FIXTURE =================
 def buscar_fixture(home, away):
     home = normalizar(home)
     away = normalizar(away)
@@ -127,9 +126,9 @@ def analisar(home, away):
     melhor = max(probs, key=probs.get)
     prob = probs[melhor]
 
-    # trava inteligência (evita Over 1.5 fixo)
-    if melhor == "Over 1.5" and media < 2:
-        melhor = "Under 2.5"
+    # evitar over 1.5 fraco
+    if melhor == "Over 1.5" and (prob < 0.8 or media < 2.8):
+        melhor = "Over 2.5" if probs["Over 2.5"] > 0.7 else "Ambas Marcam"
         prob = probs[melhor]
 
     fixture = buscar_fixture(home, away)
@@ -144,6 +143,9 @@ def analisar(home, away):
         dt = datetime.fromisoformat(
             fixture["fixture"]["date"].replace("Z", "+00:00")
         )
+
+        # converter UTC → Brasil (-4h)
+        dt = dt - timedelta(hours=4)
 
         data_txt = dt.strftime("%d/%m")
         hora = dt.strftime("%H:%M")
@@ -163,8 +165,16 @@ def analisar(home, away):
 def auto():
     global enviados_ids
 
+    ligas_permitidas = [
+        "brazil", "argentina", "portugal",
+        "netherlands", "scotland", "saudi",
+        "spain", "germany", "italy", "france"
+    ]
+
     while True:
         try:
+            enviados = 0
+
             for i in range(DIAS_BUSCA):
                 data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
 
@@ -175,29 +185,59 @@ def auto():
                 if not data:
                     continue
 
-                enviados = 0
-
                 for j in data.get("response", []):
                     fid = j["fixture"]["id"]
 
                     if fid in enviados_ids:
                         continue
 
+                    liga = j["league"]["name"].lower()
+
+                    # filtro liga
+                    if not any(l in liga for l in ligas_permitidas):
+                        continue
+
                     h = j["teams"]["home"]["name"]
                     a = j["teams"]["away"]["name"]
+
+                    # bloquear sub / feminino
+                    if "u21" in h.lower() or "u21" in a.lower():
+                        continue
+                    if "women" in h.lower() or "women" in a.lower():
+                        continue
 
                     res = analisar(h, a)
 
                     if "❌" in res:
                         continue
 
-                    if "📊 7" in res or "📊 8" in res or "📊 9" in res:
-                        enviar("🤖 AUTO\n\n🔥 SINAL PRO\n\n" + res)
-                        enviados_ids.add(fid)
-                        enviados += 1
+                    try:
+                        prob = int(res.split("📊 ")[1].split("%")[0])
+                        media = float(res.split("Média gols: ")[1])
+                        mercado = res.split("🎯 ")[1].split("\n")[0]
+                    except:
+                        continue
+
+                    # filtro profissional
+                    if mercado == "Over 1.5" and (prob < 80 or media < 2.8):
+                        continue
+                    if mercado == "Over 2.5" and (prob < 72 or media < 2.4):
+                        continue
+                    if mercado == "Under 2.5" and (prob < 72 or media > 2.2):
+                        continue
+                    if mercado == "Ambas Marcam" and prob < 70:
+                        continue
+
+                    enviar("🤖 AUTO\n\n🔥 SINAL ELITE\n\n" + res)
+
+                    enviados_ids.add(fid)
+                    enviados += 1
 
                     if enviados >= 3:
                         break
+
+                if enviados >= 3:
+                    break
 
         except:
             pass
