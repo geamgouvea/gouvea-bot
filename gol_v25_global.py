@@ -13,7 +13,8 @@ API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
 
 HEADERS = {"x-apisports-key": API_KEY}
 
-DIAS_BUSCA = 5
+DIAS_BUSCA_AUTO = 5
+DIAS_BUSCA_MANUAL = 10
 AUTO_INTERVALO = 1200
 
 enviados_ids = set()
@@ -86,14 +87,14 @@ def historico(team_id):
     return data.get("response", []) if data else []
 
 # ================= BUSCAR FIXTURE =================
-def buscar_fixture(home, away):
+def buscar_fixture(home, away, dias):
     home_n = normalizar(home)
     away_n = normalizar(away)
 
     melhor = None
     melhor_score = 0
 
-    for i in range(DIAS_BUSCA):
+    for i in range(dias):
         data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
 
         data = req("https://v3.football.api-sports.io/fixtures", {
@@ -119,8 +120,8 @@ def buscar_fixture(home, away):
     return melhor if melhor_score > 0.5 else None
 
 # ================= ANALISE =================
-def analisar(home, away):
-    fixture = buscar_fixture(home, away)
+def analisar(home, away, dias):
+    fixture = buscar_fixture(home, away, dias)
 
     if not fixture:
         return "❌ Jogo não encontrado"
@@ -131,7 +132,6 @@ def analisar(home, away):
 
     agora = datetime.utcnow() - timedelta(hours=4)
 
-    # só pré-jogo
     if dt <= agora:
         return "❌ Jogo já iniciado"
 
@@ -187,7 +187,7 @@ def auto():
         try:
             enviados = 0
 
-            for i in range(DIAS_BUSCA):
+            for i in range(DIAS_BUSCA_AUTO):
                 data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
 
                 data = req("https://v3.football.api-sports.io/fixtures", {
@@ -206,7 +206,6 @@ def auto():
                     h = j["teams"]["home"]["name"]
                     a = j["teams"]["away"]["name"]
 
-                    # bloquear categorias ruins
                     if any(x in h.lower() for x in ["u21","u20","women"]) or \
                        any(x in a.lower() for x in ["u21","u20","women"]):
                         continue
@@ -218,11 +217,10 @@ def auto():
                     agora = datetime.utcnow() - timedelta(hours=4)
                     diff = (dt - agora).total_seconds() / 60
 
-                    # janela mais estável
-                    if diff < 20 or diff > 240:
+                    if diff < 10 or diff > 360:
                         continue
 
-                    res = analisar(h, a)
+                    res = analisar(h, a, DIAS_BUSCA_AUTO)
 
                     if not res or "❌" in res:
                         continue
@@ -270,7 +268,7 @@ def main():
                     enviar("⚠️ Use: time x time")
                     continue
 
-                res = analisar(h, a)
+                res = analisar(h, a, DIAS_BUSCA_MANUAL)
 
                 if not res:
                     enviar("❌ Sem valor")
