@@ -9,6 +9,7 @@ from difflib import SequenceMatcher
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
+
 HEADERS = {"x-apisports-key": API_KEY}
 
 DIAS_BUSCA = 3
@@ -47,7 +48,7 @@ def enviar(msg):
     except:
         pass
 
-# ================= BUSCAR TIME (INTELIGENTE) =================
+# ================= BUSCAR TIME =================
 def buscar_time(nome):
     nome_norm = normalizar(nome)
     data = req("https://v3.football.api-sports.io/teams", {"search": nome_norm})
@@ -79,7 +80,7 @@ def historico(team_id):
     })
     return data.get("response", []) if data else []
 
-# ================= BUSCAR FIXTURE (INTELIGENTE) =================
+# ================= BUSCAR FIXTURE =================
 def buscar_fixture(home, away):
     home_n = normalizar(home)
     away_n = normalizar(away)
@@ -121,7 +122,7 @@ def analisar(home, away):
     away_id = buscar_time(away)
 
     if not home_id or not away_id:
-        return "❌ Times não encontrados"
+        return None
 
     jogos = historico(home_id) + historico(away_id)
 
@@ -142,7 +143,7 @@ def analisar(home, away):
             btts += 1
 
     if not gols:
-        return "❌ Sem dados"
+        return None
 
     total_jogos = len(gols)
     media = sum(gols) / total_jogos
@@ -157,13 +158,15 @@ def analisar(home, away):
     melhor = max(probs, key=probs.get)
     prob = probs[melhor]
 
-    if melhor == "Over 1.5" and (prob < 0.8 or media < 2.8):
-        if probs["Over 2.5"] > 0.7:
-            melhor = "Over 2.5"
-            prob = probs[melhor]
-        else:
-            melhor = "Ambas Marcam"
-            prob = probs[melhor]
+    # ================= FILTRO PROFISSIONAL =================
+    if melhor == "Over 1.5" and prob < 0.75:
+        return None
+    if melhor == "Over 2.5" and prob < 0.70:
+        return None
+    if melhor == "Under 2.5" and prob < 0.70:
+        return None
+    if melhor == "Ambas Marcam" and prob < 0.65:
+        return None
 
     fixture = buscar_fixture(home, away)
 
@@ -172,13 +175,11 @@ def analisar(home, away):
     hora = "--:--"
 
     if fixture:
-        liga = fixture["league"]["name"]
+        liga = f"{fixture['league']['name']} ({fixture['league']['country']})"
 
         dt = datetime.fromisoformat(
             fixture["fixture"]["date"].replace("Z", "+00:00")
-        )
-
-        dt = dt - timedelta(hours=4)
+        ) - timedelta(hours=4)
 
         data_txt = dt.strftime("%d/%m")
         hora = dt.strftime("%H:%M")
@@ -194,7 +195,7 @@ def analisar(home, away):
 📊 {int(prob*100)}%
 📈 Média gols: {round(media,2)}"""
 
-# ================= AUTO (24H CORRIGIDO) =================
+# ================= AUTO 24H =================
 def auto():
     while True:
         try:
@@ -230,13 +231,13 @@ def auto():
                     agora = datetime.utcnow() - timedelta(hours=4)
                     diff = (dt - agora).total_seconds() / 60
 
-                    # ✅ AGORA 24H (10 min até 24 horas antes)
+                    # janela 24h
                     if diff < 10 or diff > 1440:
                         continue
 
                     res = analisar(h, a)
 
-                    if "❌" in res:
+                    if not res:
                         continue
 
                     enviar("🤖 AUTO\n\n🔥 SINAL ELITE\n\n" + res)
@@ -259,7 +260,11 @@ def auto():
 def manual(texto):
     try:
         h, a = texto.split("x")
-        return "🧠 MANUAL\n\n" + analisar(h.strip(), a.strip())
+        res = analisar(h.strip(), a.strip())
+        if res:
+            return "🧠 MANUAL\n\n" + res
+        else:
+            return "❌ Nenhuma entrada de valor encontrada"
     except:
         return "⚠️ Use: time x time"
 
