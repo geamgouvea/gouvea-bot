@@ -8,8 +8,18 @@ import unicodedata
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
+
 HEADERS = {"x-apisports-key": API_KEY}
 last_update_id = None
+enviados_ids = set()
+
+# ================= LIGAS PERMITIDAS =================
+LIGAS_PERMITIDAS = [
+    "brazil", "argentina", "england", "spain",
+    "italy", "germany", "france",
+    "netherlands", "portugal", "scotland",
+    "saudi-arabia"
+]
 
 # ================= NORMALIZAR =================
 def normalizar(nome):
@@ -25,7 +35,7 @@ def req(url, params=None):
         if r.status_code == 200:
             return r.json()
     except Exception as e:
-        print("ERRO REQUEST:", e)
+        print("ERRO API:", e)
     return None
 
 # ================= TELEGRAM =================
@@ -46,11 +56,6 @@ def buscar_time(nome):
     if data and data.get("response"):
         return data["response"][0]["team"]["id"]
 
-    nome_curto = nome.split()[0]
-    data = req("https://v3.football.api-sports.io/teams", {"search": nome_curto})
-    if data and data.get("response"):
-        return data["response"][0]["team"]["id"]
-
     return None
 
 # ================= HISTÓRICO =================
@@ -61,12 +66,12 @@ def historico(team_id):
     })
     return data.get("response", []) if data else []
 
-# ================= BUSCAR FIXTURE =================
+# ================= BUSCAR FIXTURE INTELIGENTE =================
 def buscar_fixture(home, away):
-    home_n = normalizar(home)
-    away_n = normalizar(away)
+    home = normalizar(home)
+    away = normalizar(away)
 
-    data = req("https://v3.football.api-sports.io/fixtures", {"next": 200})
+    data = req("https://v3.football.api-sports.io/fixtures", {"next": 100})
 
     if not data:
         return None
@@ -74,16 +79,20 @@ def buscar_fixture(home, away):
     melhor = None
     score_max = 0
 
-    for j in data.get("response", []):
+    for j in data["response"]:
+        pais = j["league"]["country"].lower()
+
+        # FILTRO DE LIGA
+        if not any(p in pais for p in LIGAS_PERMITIDAS):
+            continue
+
         h = normalizar(j["teams"]["home"]["name"])
         a = normalizar(j["teams"]["away"]["name"])
 
         score = 0
-        if home_n in h or h in home_n:
+        if home in h or h in home:
             score += 1
-        if away_n in a or a in away_n:
-            score += 1
-        if home_n in a or away_n in h:
+        if away in a or a in away:
             score += 1
 
         if score > score_max:
@@ -107,114 +116,96 @@ def analisar(home, away):
         jogos = historico(home_id) + historico(away_id)
 
         gols = []
-        btts = 0
 
         for j in jogos:
             try:
                 g1 = j["goals"]["home"]
                 g2 = j["goals"]["away"]
 
-                if g1 is None or g2 is None:
-                    continue
-
-                total = g1 + g2
-                gols.append(total)
-
-                if g1 > 0 and g2 > 0:
-                    btts += 1
+                if g1 is not None and g2 is not None:
+                    gols.append(g1 + g2)
             except:
                 continue
 
         if not gols:
-            return "❌ Sem dados suficientes"
+            return "❌ Sem dados"
 
-        total = len(gols)
+        media = sum(gols) / len(gols)
+        prob = sum(g >= 2 for g in gols) / len(gols)
 
-        probs = {
-            "Over 1.5": sum(g >= 2 for g in gols) / total,
-            "Over 2.5": sum(g >= 3 for g in gols) / total,
-            "Under 2.5": sum(g <= 2 for g in gols) / total,
-            "Ambas marcam": btts / total
-        }
-
-        melhor = max(probs, key=probs.get)
-        prob = int(probs[melhor] * 100)
-        media = round(sum(gols)/len(gols), 2)
+        if prob < 0.65:
+            return "⚠️ Baixa probabilidade"
 
         fixture = buscar_fixture(home, away)
 
-        # SE NÃO ACHAR JOGO → NÃO TRAVA MAIS
+        liga = "Estimativa"
+        hora = "--:--"
+        fixture_id = None
+
         if fixture:
             liga = fixture["league"]["name"]
+            fixture_id = fixture["fixture"]["id"]
 
             dt = datetime.fromisoformat(
                 fixture["fixture"]["date"].replace("Z","+00:00")
             )
             hora = dt.strftime("%H:%M")
 
-            home_nome = fixture["teams"]["home"]["name"]
-            away_nome = fixture["teams"]["away"]["name"]
-        else:
-            liga = "Estimativa"
-            hora = "--:--"
-            home_nome = home
-            away_nome = away
+        msg = f"""🔥 SINAL PRO
 
-        return f"""🔥 SINAL PRO
-
-⚽ {home_nome} x {away_nome}
+⚽ {home} x {away}
 🏆 {liga}
 ⏰ {hora}
 
-🎯 {melhor}
-📊 {prob}%
-📈 Média gols: {media}
-"""
+🎯 Over 1.5
+📊 {int(prob*100)}%
+📈 Média gols: {round(media,2)}"""
+
+        return msg, fixture_id
 
     except Exception as e:
         print("ERRO ANALISE:", e)
-        return "❌ Erro ao analisar"
+        return None
 
 # ================= AUTO =================
 def auto():
+    global enviados_ids
+
     while True:
         try:
-            print("🤖 AUTO RODANDO...")
+            print("AUTO rodando...")
 
             data = req("https://v3.football.api-sports.io/fixtures", {"next": 50})
 
             if data:
                 enviados = 0
 
-                for j in data.get("response", []):
+                for j in data["response"]:
+                    pais = j["league"]["country"].lower()
+
+                    # FILTRO DE LIGA
+                    if not any(p in pais for p in LIGAS_PERMITIDAS):
+                        continue
+
                     home = j["teams"]["home"]["name"]
                     away = j["teams"]["away"]["name"]
+                    fixture_id = j["fixture"]["id"]
 
-                    liga = j["league"]["name"]
-
-                    dt = datetime.fromisoformat(
-                        j["fixture"]["date"].replace("Z","+00:00")
-                    )
-                    hora = dt.strftime("%H:%M")
+                    # NÃO REPETE
+                    if fixture_id in enviados_ids:
+                        continue
 
                     res = analisar(home, away)
 
-                    if "📊" in res:
-                        prob = int(res.split("📊 ")[1].split("%")[0])
+                    if res and isinstance(res, tuple):
+                        msg, fid = res
 
-                        if prob >= 75:
-                            mensagem = f"""🤖 AUTO
+                        enviar("🤖 AUTO\n\n" + msg)
 
-🔥 SINAL PRO
+                        if fid:
+                            enviados_ids.add(fid)
 
-⚽ {home} x {away}
-🏆 {liga}
-⏰ {hora}
-
-{res.split("🎯")[1]}"""
-
-                            enviar(mensagem)
-                            enviados += 1
+                        enviados += 1
 
                     if enviados >= 3:
                         break
@@ -228,7 +219,6 @@ def auto():
 def main():
     global last_update_id
 
-    print("🚀 BOT INICIADO")
     enviar("🤖 BOT ATIVO COM SUCESSO")
 
     while True:
@@ -249,7 +239,13 @@ def main():
                 if "x" in texto:
                     try:
                         h, a = texto.split("x")
-                        enviar(analisar(h.strip(), a.strip()))
+                        res = analisar(h.strip(), a.strip())
+
+                        if isinstance(res, tuple):
+                            enviar(res[0])
+                        else:
+                            enviar(res)
+
                     except:
                         enviar("⚠️ Use: time x time")
 
