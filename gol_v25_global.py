@@ -4,12 +4,12 @@ import threading
 from datetime import datetime, timedelta
 import unicodedata
 from difflib import SequenceMatcher
-import re
 
 # ================= CONFIG =================
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
+
 HEADERS = {"x-apisports-key": API_KEY}
 
 AUTO_INTERVALO = 1800
@@ -22,7 +22,8 @@ last_update_id = None
 # ================= DATA =================
 def parse_data(data_str):
     try:
-        return datetime.fromisoformat(data_str.replace("Z", "+00:00")).replace(tzinfo=None)
+        dt = datetime.fromisoformat(data_str.replace("Z", "+00:00"))
+        return dt.replace(tzinfo=None)
     except:
         return None
 
@@ -55,7 +56,7 @@ def enviar(msg):
     except:
         pass
 
-# ================= BUSCAR FIXTURE (CORRIGIDO) =================
+# ================= BUSCAR FIXTURE (MELHORADO) =================
 def buscar_fixture(home, away):
     home_n = normalizar(home)
     away_n = normalizar(away)
@@ -63,7 +64,7 @@ def buscar_fixture(home, away):
     melhor = None
     melhor_score = 0
 
-    for i in range(10):  # 🔥 menos dias = mais rápido e eficiente
+    for i in range(30):  # 🔥 mais rápido e eficiente
         data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
 
         data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
@@ -74,21 +75,16 @@ def buscar_fixture(home, away):
             h = normalizar(j["teams"]["home"]["name"])
             a = normalizar(j["teams"]["away"]["name"])
 
-            score1 = (similar(home_n, h) + similar(away_n, a)) / 2
-            score2 = (similar(home_n, a) + similar(away_n, h)) / 2
+            score = (similar(home_n, h) + similar(away_n, a)) / 2
+            score_inv = (similar(home_n, a) + similar(away_n, h)) / 2
 
-            final = max(score1, score2)
-
-            # 🔥 DETECÇÃO POR PALAVRA CHAVE
-            if home_n.split()[0] in h or away_n.split()[0] in a:
-                final += 0.10
+            final = max(score, score_inv)
 
             if final > melhor_score:
                 melhor_score = final
                 melhor = j
 
-    # 🔥 AJUSTE IDEAL
-    if melhor_score < 0.60:
+    if melhor_score < 0.60:  # 🔥 mais flexível no manual
         return None
 
     return melhor
@@ -101,23 +97,22 @@ def historico(team_id):
     })
     return data.get("response", []) if data else []
 
-# ================= ESCOLHA MERCADO =================
+# ================= ESCOLHA DE MERCADO (PRO) =================
 def escolher_mercado(media, probs):
 
     if media >= 3.0 and probs["Over 2.5"] >= 0.68:
         return "Over 2.5", probs["Over 2.5"]
 
-    if probs["Ambas Marcam"] >= 0.70:
+    if probs["Ambas Marcam"] >= 0.75 and media >= 2.5:
         return "Ambas Marcam", probs["Ambas Marcam"]
 
-    if media <= 2.1 and probs["Under 2.5"] >= 0.68:
+    if media <= 2.0 and probs["Under 2.5"] >= 0.70:
         return "Under 2.5", probs["Under 2.5"]
 
-    if probs["Over 1.5"] >= 0.75:
+    if probs["Over 1.5"] >= 0.78:
         return "Over 1.5", probs["Over 1.5"]
 
-    melhor = max(probs, key=probs.get)
-    return melhor, probs[melhor]
+    return None, 0
 
 # ================= ANALISE =================
 def analisar(home, away):
@@ -162,15 +157,22 @@ def analisar(home, away):
 
     melhor, prob = escolher_mercado(media, probs)
 
+    if not melhor:
+        return None
+
+    # 🔥 FILTRO REAL DE QUALIDADE
+    if prob < 0.65:
+        return None
+
     dt = parse_data(fixture["fixture"]["date"])
     if not dt:
         return None
 
     dt_local = dt - timedelta(hours=4)
 
-    if prob >= 0.80:
+    if prob >= 0.82:
         nivel = "🔥 FORTE"
-    elif prob >= 0.70:
+    elif prob >= 0.72:
         nivel = "⚖️ MÉDIA"
     else:
         nivel = "⚠️ RISCO"
@@ -194,29 +196,6 @@ def analisar(home, away):
         "fixture_id": fixture["fixture"]["id"]
     }
 
-# ================= MANUAL (100% FLEXÍVEL) =================
-def manual(texto):
-    try:
-        texto = texto.lower()
-
-        partes = re.split(r"x|vs|versus", texto)
-
-        if len(partes) != 2:
-            return "⚠️ Use: time x time"
-
-        h = partes[0].strip()
-        a = partes[1].strip()
-
-        res = analisar(h, a)
-
-        if not res:
-            return "❌ Não foi possível analisar o jogo"
-
-        return "🧠 MANUAL\n\n" + res["msg"]
-
-    except:
-        return "⚠️ Use: time x time"
-
 # ================= AUTO =================
 def auto():
     while True:
@@ -224,7 +203,7 @@ def auto():
             agora = datetime.utcnow()
             candidatos = []
 
-            for i in range(2):
+            for i in range(3):
                 data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
 
                 data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
@@ -232,7 +211,6 @@ def auto():
                     continue
 
                 for j in data.get("response", []):
-
                     fid = j["fixture"]["id"]
 
                     if fid in enviados_ids:
@@ -255,8 +233,7 @@ def auto():
                     if not res:
                         continue
 
-                    if res["prob"] >= 0.70:
-                        candidatos.append(res)
+                    candidatos.append(res)
 
             candidatos.sort(key=lambda x: x["prob"], reverse=True)
 
@@ -275,6 +252,30 @@ def auto():
 
         time.sleep(AUTO_INTERVALO)
 
+# ================= MANUAL =================
+def manual(texto):
+    try:
+        if "x" not in texto.lower():
+            return "⚠️ Use: time x time"
+
+        partes = texto.lower().split("x")
+
+        if len(partes) != 2:
+            return "⚠️ Use: time x time"
+
+        h = partes[0].strip()
+        a = partes[1].strip()
+
+        res = analisar(h, a)
+
+        if not res:
+            return "❌ Jogo não encontrado ou sem dados suficientes"
+
+        return "🧠 MANUAL\n\n" + res["msg"]
+
+    except:
+        return "⚠️ Erro na leitura. Use: time x time"
+
 # ================= MAIN =================
 def main():
     global last_update_id
@@ -285,7 +286,7 @@ def main():
         try:
             r = requests.get(
                 f"https://api.telegram.org/bot{TOKEN}/getUpdates",
-                params={"offset": last_update_id or 0}
+                params={"offset": last_update_id}
             ).json()
 
             for u in r.get("result", []):
