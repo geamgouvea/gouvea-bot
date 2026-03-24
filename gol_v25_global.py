@@ -22,16 +22,10 @@ last_update_id = None
 # ================= NORMALIZAR =================
 def normalizar(nome):
     nome = nome.lower().strip()
-    nome = nome.replace("fc", "").replace("club", "")
-    nome = nome.replace("de", "").replace("da", "").replace("do", "")
-    nome = nome.replace("u21", "").replace("u20", "").replace("u18", "")
     nome = unicodedata.normalize('NFKD', nome)
-    nome = nome.encode('ASCII', 'ignore').decode('ASCII')
-    return nome.strip()
+    return nome.encode('ASCII', 'ignore').decode('ASCII')
 
 def similar(a, b):
-    if a in b or b in a:
-        return 1.0
     return SequenceMatcher(None, a, b).ratio()
 
 # ================= REQUEST =================
@@ -54,7 +48,7 @@ def enviar(msg):
     except:
         pass
 
-# ================= BUSCAR FIXTURE (FORTE) =================
+# ================= BUSCAR FIXTURE (CORRETO) =================
 def buscar_fixture(home, away):
     home_n = normalizar(home)
     away_n = normalizar(away)
@@ -62,8 +56,7 @@ def buscar_fixture(home, away):
     melhor = None
     melhor_score = 0
 
-    # 🔥 busca ampla
-    for i in range(-2, 10):
+    for i in range(7):  # 🔥 busca só próximos dias (mais preciso)
         data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
 
         data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
@@ -79,14 +72,12 @@ def buscar_fixture(home, away):
 
             final = max(score, score_inv)
 
-            if final > melhor_score:
+            # 🔥 só aceita se for MUITO parecido
+            if final > melhor_score and final >= 0.75:
                 melhor_score = final
                 melhor = j
 
-    if melhor_score < 0.45:
-        return None
-
-    return melhor
+    return melhor  # ❌ se não achar, retorna None (SEM INVENTAR DADO)
 
 # ================= HISTÓRICO =================
 def historico(team_id):
@@ -96,62 +87,13 @@ def historico(team_id):
     })
     return data.get("response", []) if data else []
 
-# ================= ESCOLHA MERCADO =================
-def escolher_mercado(media, probs):
-
-    if media >= 3.0 and probs["Over 2.5"] >= 0.68:
-        return "Over 2.5", probs["Over 2.5"]
-
-    if probs["Ambas Marcam"] >= 0.72 and media >= 2.5:
-        return "Ambas Marcam", probs["Ambas Marcam"]
-
-    if media <= 2.1 and probs["Under 2.5"] >= 0.70:
-        return "Under 2.5", probs["Under 2.5"]
-
-    if probs["Over 1.5"] >= 0.75:
-        return "Over 1.5", probs["Over 1.5"]
-
-    return None, 0
-
 # ================= ANALISE =================
 def analisar(home, away):
 
     fixture = buscar_fixture(home, away)
-
-    # ================= CASO NÃO ENCONTRE =================
     if not fixture:
-        # 🔥 fallback inteligente (não fake fixo)
-        base = (len(home) + len(away)) % 3
+        return None
 
-        if base == 0:
-            mercado = "Over 1.5"
-            prob = 0.66
-            media = 2.3
-        elif base == 1:
-            mercado = "Ambas Marcam"
-            prob = 0.64
-            media = 2.5
-        else:
-            mercado = "Under 2.5"
-            prob = 0.62
-            media = 2.0
-
-        return f"""🧠 MANUAL
-
-🔎 ANÁLISE
-
-⚽ {home} x {away}
-🏆 Dados não encontrados na base
-📅 -
-⏰ -
-
-🎯 {mercado}
-📊 {int(prob*100)}%
-📈 Média gols estimada: {media}
-
-⚠️ RISCO (dados limitados)"""
-
-    # ================= COM DADOS REAIS =================
     home_id = fixture["teams"]["home"]["id"]
     away_id = fixture["teams"]["away"]["id"]
 
@@ -174,25 +116,35 @@ def analisar(home, away):
             btts += 1
 
     if len(gols) < 6:
-        return "⚠️ Dados insuficientes para análise"
+        return None
 
     total = len(gols)
     media = sum(gols) / total
 
-    probs = {
-        "Over 1.5": sum(g >= 2 for g in gols) / total,
-        "Over 2.5": sum(g >= 3 for g in gols) / total,
-        "Under 2.5": sum(g <= 2 for g in gols) / total,
-        "Ambas Marcam": btts / total
+    over15 = sum(g >= 2 for g in gols) / total
+    over25 = sum(g >= 3 for g in gols) / total
+    under25 = sum(g <= 2 for g in gols) / total
+    btts_p = btts / total
+
+    # ================= ESCOLHA INTELIGENTE =================
+    mercados = {
+        "Over 2.5": over25,
+        "Ambas Marcam": btts_p,
+        "Under 2.5": under25,
+        "Over 1.5": over15
     }
 
-    melhor, prob = escolher_mercado(media, probs)
+    melhor = max(mercados, key=mercados.get)
+    prob = mercados[melhor]
 
-    if not melhor:
-        return "⚠️ Nenhum mercado com valor"
+    if prob < 0.65:
+        return None
 
+    # ================= DATA REAL =================
     dt = datetime.fromisoformat(fixture["fixture"]["date"].replace("Z", "+00:00"))
     dt_local = dt - timedelta(hours=4)
+
+    liga = f'{fixture["league"]["name"]} ({fixture["league"]["country"]})'
 
     if prob >= 0.82:
         nivel = "🔥 FORTE"
@@ -201,11 +153,8 @@ def analisar(home, away):
     else:
         nivel = "⚠️ RISCO"
 
-    liga = f'{fixture["league"]["name"]} ({fixture["league"]["country"]})'
-
-    return f"""🧠 MANUAL
-
-🔎 ANÁLISE
+    return {
+        "msg": f"""🔎 ANÁLISE
 
 ⚽ {fixture["teams"]["home"]["name"]} x {fixture["teams"]["away"]["name"]}
 🏆 {liga}
@@ -216,19 +165,22 @@ def analisar(home, away):
 📊 {int(prob*100)}%
 📈 Média gols: {round(media,2)}
 
-{nivel}"""
+{nivel}""",
+        "prob": prob,
+        "fixture_id": fixture["fixture"]["id"]
+    }
 
 # ================= AUTO =================
 def auto():
     while True:
         try:
             agora = datetime.utcnow()
-            enviados = 0
+            candidatos = []
 
-            for i in range(3):
+            for i in range(2):
                 data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
-                data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
 
+                data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
                 if not data:
                     continue
 
@@ -238,7 +190,7 @@ def auto():
                     if fid in enviados_ids:
                         continue
 
-                    dt = datetime.fromisoformat(j["fixture"]["date"].replace("Z", "+00:00"))
+                    dt = datetime.fromisoformat(j["fixture"]["date"].replace("Z", "+00:00")).replace(tzinfo=None)
                     diff = (dt - agora).total_seconds() / 60
 
                     if diff < JANELA_MIN or diff > JANELA_MAX:
@@ -249,12 +201,19 @@ def auto():
                         j["teams"]["away"]["name"]
                     )
 
-                    if "ANÁLISE" not in res:
+                    if not res:
                         continue
 
-                    enviar("🤖 AUTO\n\n🔥 SINAL\n\n" + res)
-                    enviados_ids.add(fid)
-                    enviados += 1
+                    candidatos.append(res)
+
+            candidatos.sort(key=lambda x: x["prob"], reverse=True)
+
+            enviados = 0
+
+            for c in candidatos[:5]:
+                enviar("🤖 AUTO\n\n🔥 SINAL\n\n" + c["msg"])
+                enviados_ids.add(c["fixture_id"])
+                enviados += 1
 
             if enviados == 0:
                 enviar("⚠️ AUTO: Nenhum jogo qualificado")
@@ -270,15 +229,16 @@ def manual(texto):
         if "x" not in texto.lower():
             return "⚠️ Use: time x time"
 
-        partes = texto.lower().split("x")
+        h, a = texto.lower().split("x")
+        h = h.strip()
+        a = a.strip()
 
-        if len(partes) != 2:
-            return "⚠️ Use: time x time"
+        res = analisar(h, a)
 
-        h = partes[0].strip()
-        a = partes[1].strip()
+        if not res:
+            return "❌ Jogo não encontrado (digite nomes mais próximos do real)"
 
-        return analisar(h, a)
+        return "🧠 MANUAL\n\n" + res["msg"]
 
     except:
         return "⚠️ Erro na leitura"
