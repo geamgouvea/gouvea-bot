@@ -9,11 +9,10 @@ import re
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
-
 HEADERS = {"x-apisports-key": API_KEY}
 
-AUTO_INTERVALO = 1800  # 30 min
-JANELA_MIN = 30
+AUTO_INTERVALO = 1800
+JANELA_MIN = 20
 JANELA_MAX = 720
 
 enviados_ids = set()
@@ -23,8 +22,7 @@ last_update_id = None
 def normalizar(nome):
     nome = nome.lower().strip()
     nome = unicodedata.normalize('NFKD', nome)
-    nome = nome.encode('ASCII', 'ignore').decode('ASCII')
-    return nome
+    return nome.encode('ASCII', 'ignore').decode('ASCII')
 
 # ================= REQUEST =================
 def req(url, params=None):
@@ -46,7 +44,7 @@ def enviar(msg):
     except:
         pass
 
-# ================= BUSCA MELHORADA =================
+# ================= BUSCAR FIXTURE (REESCRITO) =================
 def buscar_fixture(home, away):
 
     home = normalizar(home)
@@ -59,8 +57,7 @@ def buscar_fixture(home, away):
         if not data:
             continue
 
-        for j in data["response"]:
-
+        for j in data.get("response", []):
             h = normalizar(j["teams"]["home"]["name"])
             a = normalizar(j["teams"]["away"]["name"])
 
@@ -82,7 +79,7 @@ def historico(team_id):
         "team": team_id,
         "last": 10
     })
-    return data["response"] if data else []
+    return data.get("response", []) if data else []
 
 # ================= ANALISE =================
 def analisar(home, away):
@@ -157,8 +154,7 @@ def gerar_multipla():
         if not data:
             continue
 
-        for j in data["response"]:
-
+        for j in data.get("response", []):
             res = analisar(
                 j["teams"]["home"]["name"],
                 j["teams"]["away"]["name"]
@@ -172,14 +168,14 @@ def gerar_multipla():
     picks = candidatos[:7]
 
     if len(picks) < 7:
-        return "⚠️ Não há jogos suficientes"
+        return "⚠️ Poucos jogos confiáveis hoje"
 
     msg = "💰 MÚLTIPLA (7 jogos)\n\n"
 
     for i, p in enumerate(picks, 1):
         msg += f"{i}. {p['msg']}\n\n"
 
-    msg += "💵 Sugestão: R$5 a R$10 (bingo)"
+    msg += "💵 Sugestão: R$5 a R$10"
 
     return msg
 
@@ -210,11 +206,9 @@ def manual(texto):
 def auto():
     while True:
         try:
-            multi = gerar_multipla()
-            enviar("🤖 AUTO\n\n" + multi)
-
+            enviar("🤖 AUTO\n\n" + gerar_multipla())
         except Exception as e:
-            enviar(f"❌ ERRO: {e}")
+            enviar(f"❌ ERRO AUTO: {e}")
 
         time.sleep(AUTO_INTERVALO)
 
