@@ -12,19 +12,15 @@ API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
 HEADERS = {"x-apisports-key": API_KEY}
 
 AUTO_INTERVALO = 1800
-JANELA_MIN = 20
-JANELA_MAX = 720
 
-enviados_ids = set()
 last_update_id = None
 
-# ================= NORMALIZAR =================
+# ================= UTILS =================
 def normalizar(nome):
     nome = nome.lower().strip()
     nome = unicodedata.normalize('NFKD', nome)
     return nome.encode('ASCII', 'ignore').decode('ASCII')
 
-# ================= REQUEST =================
 def req(url, params=None):
     try:
         r = requests.get(url, headers=HEADERS, params=params, timeout=10)
@@ -34,7 +30,6 @@ def req(url, params=None):
         return None
     return None
 
-# ================= TELEGRAM =================
 def enviar(msg):
     try:
         requests.post(
@@ -44,34 +39,15 @@ def enviar(msg):
     except:
         pass
 
-# ================= BUSCAR FIXTURE (REESCRITO) =================
-def buscar_fixture(home, away):
+# ================= BUSCAR TIME =================
+def buscar_time(nome):
+    nome = normalizar(nome)
 
-    home = normalizar(home)
-    away = normalizar(away)
+    data = req("https://v3.football.api-sports.io/teams", {"search": nome})
+    if not data or not data.get("response"):
+        return None
 
-    for i in range(3):  # hoje + 2 dias
-        data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
-
-        data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
-        if not data:
-            continue
-
-        for j in data.get("response", []):
-            h = normalizar(j["teams"]["home"]["name"])
-            a = normalizar(j["teams"]["away"]["name"])
-
-            # 🔥 MATCH FLEXÍVEL REAL
-            if (
-                (home in h or h in home) and
-                (away in a or a in away)
-            ) or (
-                (home in a or a in home) and
-                (away in h or h in away)
-            ):
-                return j
-
-    return None
+    return data["response"][0]["team"]["id"]
 
 # ================= HISTÓRICO =================
 def historico(team_id):
@@ -81,15 +57,14 @@ def historico(team_id):
     })
     return data.get("response", []) if data else []
 
-# ================= ANALISE =================
+# ================= ANALISE PROFISSIONAL =================
 def analisar(home, away):
 
-    fixture = buscar_fixture(home, away)
-    if not fixture:
-        return None
+    home_id = buscar_time(home)
+    away_id = buscar_time(away)
 
-    home_id = fixture["teams"]["home"]["id"]
-    away_id = fixture["teams"]["away"]["id"]
+    if not home_id or not away_id:
+        return "❌ Não consegui identificar os times"
 
     jogos = historico(home_id) + historico(away_id)
 
@@ -109,40 +84,56 @@ def analisar(home, away):
         if g1 > 0 and g2 > 0:
             btts += 1
 
-    if len(gols) < 6:
-        return None
+    if len(gols) < 4:
+        return "⚠️ Poucos dados — tendência neutra"
 
     total = len(gols)
     media = sum(gols) / total
 
-    probs = {
-        "Over 1.5": sum(g >= 2 for g in gols) / total,
-        "Over 2.5": sum(g >= 3 for g in gols) / total,
-        "Under 2.5": sum(g <= 2 for g in gols) / total,
-        "Ambas Marcam": btts / total
-    }
+    over15 = sum(g >= 2 for g in gols) / total
+    over25 = sum(g >= 3 for g in gols) / total
+    under25 = sum(g <= 2 for g in gols) / total
+    btts_p = btts / total
 
-    melhor = max(probs, key=probs.get)
-    prob = probs[melhor]
+    # ================= DECISÃO INTELIGENTE =================
+    if over25 >= 0.65 and media >= 2.8:
+        pick = "Over 2.5"
+        prob = over25
 
-    dt = datetime.fromisoformat(
-        fixture["fixture"]["date"].replace("Z", "+00:00")
-    )
+    elif btts_p >= 0.65:
+        pick = "Ambas Marcam"
+        prob = btts_p
 
-    liga = f'{fixture["league"]["name"]} ({fixture["league"]["country"]})'
+    elif under25 >= 0.65 and media <= 2.2:
+        pick = "Under 2.5"
+        prob = under25
+
+    else:
+        pick = "Over 1.5"
+        prob = over15
+
+    # ================= NÍVEL =================
+    if prob >= 0.80:
+        nivel = "🔥 FORTE"
+    elif prob >= 0.70:
+        nivel = "⚖️ MÉDIA"
+    else:
+        nivel = "⚠️ ARRISCADO"
 
     return {
-        "msg": f"""⚽ {fixture["teams"]["home"]["name"]} x {fixture["teams"]["away"]["name"]}
-🏆 {liga}
+        "texto": f"""🧠 ANÁLISE
 
-🎯 {melhor}
+⚽ {home.title()} x {away.title()}
+
+🎯 {pick}
 📊 {int(prob*100)}%
-📈 Média: {round(media,2)}""",
-        "prob": prob,
-        "fixture_id": fixture["fixture"]["id"]
+📈 Média gols: {round(media,2)}
+
+{nivel}""",
+        "prob": prob
     }
 
-# ================= MULTIPLA =================
+# ================= MULTIPLA PROFISSIONAL =================
 def gerar_multipla():
 
     candidatos = []
@@ -155,25 +146,28 @@ def gerar_multipla():
             continue
 
         for j in data.get("response", []):
-            res = analisar(
-                j["teams"]["home"]["name"],
-                j["teams"]["away"]["name"]
-            )
 
-            if res and res["prob"] >= 0.70:
-                candidatos.append(res)
+            home = j["teams"]["home"]["name"]
+            away = j["teams"]["away"]["name"]
 
-    candidatos.sort(key=lambda x: x["prob"], reverse=True)
+            res = analisar(home, away)
 
-    picks = candidatos[:7]
+            if isinstance(res, dict) and res["prob"] >= 0.70:
+                candidatos.append((home, away, res))
 
-    if len(picks) < 7:
-        return "⚠️ Poucos jogos confiáveis hoje"
+    candidatos.sort(key=lambda x: x[2]["prob"], reverse=True)
 
-    msg = "💰 MÚLTIPLA (7 jogos)\n\n"
+    tamanho = 7 if len(candidatos) >= 7 else len(candidatos)
 
-    for i, p in enumerate(picks, 1):
-        msg += f"{i}. {p['msg']}\n\n"
+    if tamanho < 5:
+        return "⚠️ Poucos jogos bons hoje"
+
+    picks = candidatos[:tamanho]
+
+    msg = f"💰 MÚLTIPLA ({tamanho} jogos)\n\n"
+
+    for i, (h, a, r) in enumerate(picks, 1):
+        msg += f"{i}. {h} x {a}\n🎯 {r['texto'].split('🎯')[1].splitlines()[0]}\n\n"
 
     msg += "💵 Sugestão: R$5 a R$10"
 
@@ -182,7 +176,7 @@ def gerar_multipla():
 # ================= MANUAL =================
 def manual(texto):
 
-    texto = texto.lower()
+    texto = texto.lower().strip()
 
     if texto == "/multipla":
         return gerar_multipla()
@@ -197,10 +191,10 @@ def manual(texto):
 
     res = analisar(h, a)
 
-    if not res:
-        return "❌ Jogo não encontrado"
-
-    return "🧠 ANÁLISE\n\n" + res["msg"]
+    if isinstance(res, dict):
+        return res["texto"]
+    else:
+        return res
 
 # ================= AUTO =================
 def auto():
