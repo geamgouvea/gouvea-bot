@@ -10,7 +10,6 @@ import re
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
-
 HEADERS = {"x-apisports-key": API_KEY}
 
 AUTO_INTERVALO = 1800
@@ -51,12 +50,13 @@ def enviar(msg):
     try:
         requests.post(
             f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": msg}
+            data={"chat_id": CHAT_ID, "text": msg},
+            timeout=10
         )
     except:
         pass
 
-# ================= BUSCAR FIXTURE (CORRIGIDO) =================
+# ================= BUSCAR FIXTURE =================
 def buscar_fixture(home, away):
     home_n = normalizar(home)
     away_n = normalizar(away)
@@ -64,7 +64,7 @@ def buscar_fixture(home, away):
     melhor = None
     melhor_score = 0
 
-    for i in range(10):  # 🔥 menos dias = mais rápido e eficiente
+    for i in range(10):
         data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
 
         data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
@@ -80,7 +80,6 @@ def buscar_fixture(home, away):
 
             final = max(score1, score2)
 
-            # 🔥 DETECÇÃO POR PALAVRA CHAVE
             if home_n.split()[0] in h or away_n.split()[0] in a:
                 final += 0.10
 
@@ -88,8 +87,7 @@ def buscar_fixture(home, away):
                 melhor_score = final
                 melhor = j
 
-    # 🔥 AJUSTE IDEAL
-    if melhor_score < 0.60:
+    if melhor_score < 0.55:
         return None
 
     return melhor
@@ -105,16 +103,16 @@ def historico(team_id):
 # ================= ESCOLHA MERCADO =================
 def escolher_mercado(media, probs):
 
-    if media >= 3.0 and probs["Over 2.5"] >= 0.68:
+    if media >= 3.0 and probs["Over 2.5"] >= 0.65:
         return "Over 2.5", probs["Over 2.5"]
 
     if probs["Ambas Marcam"] >= 0.70:
         return "Ambas Marcam", probs["Ambas Marcam"]
 
-    if media <= 2.1 and probs["Under 2.5"] >= 0.68:
+    if media <= 2.2 and probs["Under 2.5"] >= 0.65:
         return "Under 2.5", probs["Under 2.5"]
 
-    if probs["Over 1.5"] >= 0.75:
+    if probs["Over 1.5"] >= 0.72:
         return "Over 1.5", probs["Over 1.5"]
 
     melhor = max(probs, key=probs.get)
@@ -122,85 +120,90 @@ def escolher_mercado(media, probs):
 
 # ================= ANALISE =================
 def analisar(home, away):
+    try:
+        fixture = buscar_fixture(home, away)
+        if not fixture:
+            return None
 
-    fixture = buscar_fixture(home, away)
-    if not fixture:
-        return None
+        home_id = fixture["teams"]["home"]["id"]
+        away_id = fixture["teams"]["away"]["id"]
 
-    home_id = fixture["teams"]["home"]["id"]
-    away_id = fixture["teams"]["away"]["id"]
+        jogos = historico(home_id) + historico(away_id)
 
-    jogos = historico(home_id) + historico(away_id)
+        gols = []
+        btts = 0
 
-    gols = []
-    btts = 0
+        for j in jogos:
+            g1 = j["goals"]["home"]
+            g2 = j["goals"]["away"]
 
-    for j in jogos:
-        g1 = j["goals"]["home"]
-        g2 = j["goals"]["away"]
+            if g1 is None or g2 is None:
+                continue
 
-        if g1 is None or g2 is None:
-            continue
+            total = g1 + g2
+            gols.append(total)
 
-        total = g1 + g2
-        gols.append(total)
+            if g1 > 0 and g2 > 0:
+                btts += 1
 
-        if g1 > 0 and g2 > 0:
-            btts += 1
+        if len(gols) < 4:
+            return None
 
-    if len(gols) < 6:
-        return None
+        total = len(gols)
+        media = sum(gols) / total
 
-    total = len(gols)
-    media = sum(gols) / total
+        probs = {
+            "Over 1.5": sum(g >= 2 for g in gols) / total,
+            "Over 2.5": sum(g >= 3 for g in gols) / total,
+            "Under 2.5": sum(g <= 2 for g in gols) / total,
+            "Ambas Marcam": btts / total
+        }
 
-    probs = {
-        "Over 1.5": sum(g >= 2 for g in gols) / total,
-        "Over 2.5": sum(g >= 3 for g in gols) / total,
-        "Under 2.5": sum(g <= 2 for g in gols) / total,
-        "Ambas Marcam": btts / total
-    }
+        melhor, prob = escolher_mercado(media, probs)
 
-    melhor, prob = escolher_mercado(media, probs)
+        dt = parse_data(fixture["fixture"]["date"])
 
-    dt = parse_data(fixture["fixture"]["date"])
-    if not dt:
-        return None
+        if dt:
+            dt_local = dt - timedelta(hours=4)
+            data_txt = dt_local.strftime("%d/%m")
+            hora_txt = dt_local.strftime("%H:%M")
+        else:
+            data_txt = "-"
+            hora_txt = "-"
 
-    dt_local = dt - timedelta(hours=4)
+        liga = f'{fixture["league"]["name"]} ({fixture["league"]["country"]})'
 
-    if prob >= 0.80:
-        nivel = "🔥 FORTE"
-    elif prob >= 0.70:
-        nivel = "⚖️ MÉDIA"
-    else:
-        nivel = "⚠️ RISCO"
+        if prob >= 0.82:
+            nivel = "🔥 FORTE"
+        elif prob >= 0.72:
+            nivel = "⚖️ MÉDIA"
+        else:
+            nivel = "⚠️ RISCO"
 
-    liga = f'{fixture["league"]["name"]} ({fixture["league"]["country"]})'
-
-    return {
-        "msg": f"""🔎 ANÁLISE
+        return {
+            "msg": f"""🔎 ANÁLISE
 
 ⚽ {fixture["teams"]["home"]["name"]} x {fixture["teams"]["away"]["name"]}
 🏆 {liga}
-📅 {dt_local.strftime("%d/%m")}
-⏰ {dt_local.strftime("%H:%M")}
+📅 {data_txt}
+⏰ {hora_txt}
 
 🎯 {melhor}
 📊 {int(prob*100)}%
 📈 Média gols: {round(media,2)}
 
 {nivel}""",
-        "prob": prob,
-        "fixture_id": fixture["fixture"]["id"]
-    }
+            "prob": prob,
+            "fixture_id": fixture["fixture"]["id"]
+        }
 
-# ================= MANUAL (100% FLEXÍVEL) =================
+    except:
+        return None
+
+# ================= MANUAL =================
 def manual(texto):
     try:
-        texto = texto.lower()
-
-        partes = re.split(r"x|vs|versus", texto)
+        partes = re.split(r"x|vs|versus", texto.lower())
 
         if len(partes) != 2:
             return "⚠️ Use: time x time"
@@ -216,9 +219,9 @@ def manual(texto):
         return "🧠 MANUAL\n\n" + res["msg"]
 
     except:
-        return "⚠️ Use: time x time"
+        return "⚠️ Erro no comando"
 
-# ================= AUTO =================
+# ================= AUTO COM MULTIPLA =================
 def auto():
     while True:
         try:
@@ -233,7 +236,6 @@ def auto():
                     continue
 
                 for j in data.get("response", []):
-
                     fid = j["fixture"]["id"]
 
                     if fid in enviados_ids:
@@ -261,14 +263,29 @@ def auto():
 
             candidatos.sort(key=lambda x: x["prob"], reverse=True)
 
-            enviados = 0
+            # MULTIPLA 7
+            if len(candidatos) >= 7:
+                msg = "🎯 MÚLTIPLA (7 JOGOS)\n\n"
 
-            for c in candidatos[:5]:
-                enviar("🤖 AUTO\n\n🔥 SINAL\n\n" + c["msg"])
-                enviados_ids.add(c["fixture_id"])
-                enviados += 1
+                for i, c in enumerate(candidatos[:7], 1):
+                    linha = c["msg"].split("\n")[2]
+                    mercado = c["msg"].split("🎯")[1].split("\n")[0]
+                    msg += f"{i}. {linha} → {mercado}\n"
 
-            if enviados == 0:
+                enviar(msg)
+
+            # MULTIPLA 10
+            if len(candidatos) >= 10:
+                msg = "\n💣 MÚLTIPLA BINGO (10 JOGOS)\n\n"
+
+                for i, c in enumerate(candidatos[:10], 1):
+                    linha = c["msg"].split("\n")[2]
+                    mercado = c["msg"].split("🎯")[1].split("\n")[0]
+                    msg += f"{i}. {linha} → {mercado}\n"
+
+                enviar(msg)
+
+            if len(candidatos) == 0:
                 enviar("⚠️ AUTO: Nenhum jogo qualificado")
 
         except Exception as e:
@@ -286,7 +303,8 @@ def main():
         try:
             r = requests.get(
                 f"https://api.telegram.org/bot{TOKEN}/getUpdates",
-                params={"offset": last_update_id or 0}
+                params={"offset": last_update_id or 0},
+                timeout=10
             ).json()
 
             for u in r.get("result", []):
@@ -296,7 +314,6 @@ def main():
                     continue
 
                 texto = u["message"].get("text", "")
-
                 enviar(manual(texto))
 
         except:
@@ -306,5 +323,5 @@ def main():
 
 # ================= START =================
 if __name__ == "__main__":
-    threading.Thread(target=auto).start()
+    threading.Thread(target=auto, daemon=True).start()
     main()
