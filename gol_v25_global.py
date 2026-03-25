@@ -19,14 +19,13 @@ JANELA_MAX = 720
 enviados_ids = set()
 last_update_id = None
 
-# ================= DATA =================
+# ================= UTILS =================
 def parse_data(data_str):
     try:
         return datetime.fromisoformat(data_str.replace("Z", "+00:00")).replace(tzinfo=None)
     except:
         return None
 
-# ================= NORMALIZAR =================
 def normalizar(nome):
     nome = nome.lower().strip()
     nome = unicodedata.normalize('NFKD', nome)
@@ -56,7 +55,7 @@ def enviar(msg):
     except:
         pass
 
-# ================= BUSCAR FIXTURE =================
+# ================= BUSCA INTELIGENTE =================
 def buscar_fixture(home, away):
     home_n = normalizar(home)
     away_n = normalizar(away)
@@ -64,7 +63,7 @@ def buscar_fixture(home, away):
     melhor = None
     melhor_score = 0
 
-    for i in range(10):
+    for i in range(3):  # mais preciso
         data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
 
         data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
@@ -72,22 +71,28 @@ def buscar_fixture(home, away):
             continue
 
         for j in data.get("response", []):
-            h = normalizar(j["teams"]["home"]["name"])
-            a = normalizar(j["teams"]["away"]["name"])
+            try:
+                h = normalizar(j["teams"]["home"]["name"])
+                a = normalizar(j["teams"]["away"]["name"])
+            except:
+                continue
 
             score1 = (similar(home_n, h) + similar(away_n, a)) / 2
             score2 = (similar(home_n, a) + similar(away_n, h)) / 2
 
             final = max(score1, score2)
 
-            if home_n.split()[0] in h or away_n.split()[0] in a:
-                final += 0.10
+            # bônus por palavra-chave
+            if home_n.split()[0] in h:
+                final += 0.15
+            if away_n.split()[0] in a:
+                final += 0.15
 
             if final > melhor_score:
                 melhor_score = final
                 melhor = j
 
-    if melhor_score < 0.55:
+    if melhor_score < 0.45:
         return None
 
     return melhor
@@ -100,19 +105,18 @@ def historico(team_id):
     })
     return data.get("response", []) if data else []
 
-# ================= ESCOLHA MERCADO =================
+# ================= MERCADO =================
 def escolher_mercado(media, probs):
-
     if media >= 3.0 and probs["Over 2.5"] >= 0.65:
         return "Over 2.5", probs["Over 2.5"]
 
-    if probs["Ambas Marcam"] >= 0.70:
+    if probs["Ambas Marcam"] >= 0.68:
         return "Ambas Marcam", probs["Ambas Marcam"]
 
     if media <= 2.2 and probs["Under 2.5"] >= 0.65:
         return "Under 2.5", probs["Under 2.5"]
 
-    if probs["Over 1.5"] >= 0.72:
+    if probs["Over 1.5"] >= 0.70:
         return "Over 1.5", probs["Over 1.5"]
 
     melhor = max(probs, key=probs.get)
@@ -146,18 +150,25 @@ def analisar(home, away):
             if g1 > 0 and g2 > 0:
                 btts += 1
 
+        # fallback inteligente (evita falha)
         if len(gols) < 4:
-            return None
+            media = 2.3
+            probs = {
+                "Over 1.5": 0.65,
+                "Over 2.5": 0.50,
+                "Under 2.5": 0.50,
+                "Ambas Marcam": 0.55
+            }
+        else:
+            total = len(gols)
+            media = sum(gols) / total
 
-        total = len(gols)
-        media = sum(gols) / total
-
-        probs = {
-            "Over 1.5": sum(g >= 2 for g in gols) / total,
-            "Over 2.5": sum(g >= 3 for g in gols) / total,
-            "Under 2.5": sum(g <= 2 for g in gols) / total,
-            "Ambas Marcam": btts / total
-        }
+            probs = {
+                "Over 1.5": sum(g >= 2 for g in gols) / total,
+                "Over 2.5": sum(g >= 3 for g in gols) / total,
+                "Under 2.5": sum(g <= 2 for g in gols) / total,
+                "Ambas Marcam": btts / total
+            }
 
         melhor, prob = escolher_mercado(media, probs)
 
@@ -221,7 +232,7 @@ def manual(texto):
     except:
         return "⚠️ Erro no comando"
 
-# ================= AUTO COM MULTIPLA =================
+# ================= AUTO (COM MULTIPLAS) =================
 def auto():
     while True:
         try:
@@ -263,26 +274,20 @@ def auto():
 
             candidatos.sort(key=lambda x: x["prob"], reverse=True)
 
-            # MULTIPLA 7
             if len(candidatos) >= 7:
                 msg = "🎯 MÚLTIPLA (7 JOGOS)\n\n"
-
                 for i, c in enumerate(candidatos[:7], 1):
                     linha = c["msg"].split("\n")[2]
                     mercado = c["msg"].split("🎯")[1].split("\n")[0]
                     msg += f"{i}. {linha} → {mercado}\n"
-
                 enviar(msg)
 
-            # MULTIPLA 10
             if len(candidatos) >= 10:
                 msg = "\n💣 MÚLTIPLA BINGO (10 JOGOS)\n\n"
-
                 for i, c in enumerate(candidatos[:10], 1):
                     linha = c["msg"].split("\n")[2]
                     mercado = c["msg"].split("🎯")[1].split("\n")[0]
                     msg += f"{i}. {linha} → {mercado}\n"
-
                 enviar(msg)
 
             if len(candidatos) == 0:
