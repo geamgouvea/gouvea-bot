@@ -3,143 +3,157 @@ import time
 import threading
 from datetime import datetime, timedelta
 import unicodedata
+from difflib import SequenceMatcher
 import re
 
-# ================= CONFIG =================
+# ========= CONFIG =========
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
 HEADERS = {"x-apisports-key": API_KEY}
 
-AUTO_INTERVALO = 1800  # 30 min
-JANELA_MIN = 10
-JANELA_MAX = 360
+AUTO_INTERVALO = 1800
 
-enviados = set()
-last_update_id = None
+# ========= UTILS =========
+def normalizar(nome):
+    nome = nome.lower().strip()
+    nome = unicodedata.normalize('NFKD', nome)
+    return nome.encode('ASCII', 'ignore').decode('ASCII')
 
-# ================= NORMALIZAR =================
-def normalizar(txt):
-    txt = txt.lower().strip()
-    txt = unicodedata.normalize('NFKD', txt)
-    return txt.encode('ascii', 'ignore').decode('ascii')
+def similar(a, b):
+    return SequenceMatcher(None, a, b).ratio()
 
-# ================= REQUEST =================
 def req(url, params=None):
     try:
         r = requests.get(url, headers=HEADERS, params=params, timeout=10)
         if r.status_code == 200:
             return r.json()
     except:
-        pass
+        return None
     return None
 
-# ================= TELEGRAM =================
+# ========= TELEGRAM =========
 def enviar(msg):
     try:
         requests.post(
             f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": msg}
+            data={
+                "chat_id": CHAT_ID,
+                "text": msg
+            }
         )
     except:
         pass
 
-# ================= BUSCAR JOGO (FORTE) =================
+# ========= BUSCAR JOGO =========
 def buscar_jogo(home, away):
+
     home_n = normalizar(home)
     away_n = normalizar(away)
 
     melhor = None
     melhor_score = 0
 
-    # 🔥 busca ampla (15 dias)
-    for i in range(15):
+    for i in range(10):  # 10 dias (equilibrado)
         data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
 
         data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
-        if not data:
+
+        if not data or "response" not in data:
             continue
 
-        for j in data.get("response", []):
+        for j in data["response"]:
+
+            # apenas jogos não iniciados
+            if j["fixture"]["status"]["short"] != "NS":
+                continue
+
             h = normalizar(j["teams"]["home"]["name"])
             a = normalizar(j["teams"]["away"]["name"])
 
-            score = 0
+            score = max(
+                (similar(home_n, h) + similar(away_n, a)) / 2,
+                (similar(home_n, a) + similar(away_n, h)) / 2
+            )
 
-            # match parcial inteligente
-            if home_n in h or h in home_n:
-                score += 1
-            if away_n in a or a in away_n:
-                score += 1
-
-            if home_n in a or away_n in h:
-                score += 0.5
+            # boost inteligente
+            if home_n.split()[0] in h or away_n.split()[0] in a:
+                score += 0.15
 
             if score > melhor_score:
                 melhor_score = score
                 melhor = j
 
-    return melhor  # 🔥 SEM BLOQUEIO
+    # corte mínimo (EVITA jogo errado)
+    if melhor_score < 0.50:
+        return None
 
-# ================= HISTÓRICO =================
+    return melhor
+
+# ========= HISTÓRICO =========
 def historico(team_id):
     data = req("https://v3.football.api-sports.io/fixtures", {
         "team": team_id,
         "last": 10
     })
-    return data.get("response", []) if data else []
 
-# ================= ANALISE CASA/FORA =================
+    if not data or "response" not in data:
+        return []
+
+    return data["response"]
+
+# ========= ANALISAR =========
 def analisar(home, away):
 
-    jogo = buscar_jogo(home, away)
+    fixture = buscar_jogo(home, away)
 
-    if not jogo:
+    if not fixture:
         return fallback(home, away)
 
-    home_id = jogo["teams"]["home"]["id"]
-    away_id = jogo["teams"]["away"]["id"]
+    home_id = fixture["teams"]["home"]["id"]
+    away_id = fixture["teams"]["away"]["id"]
 
-    jogos_home = historico(home_id)
-    jogos_away = historico(away_id)
+    # evitar duplicação
+    ids = set()
+    jogos = []
 
-    if not jogos_home or not jogos_away:
-        return fallback(home, away)
+    for j in historico(home_id) + historico(away_id):
+        fid = j["fixture"]["id"]
+        if fid not in ids:
+            ids.add(fid)
+            jogos.append(j)
 
-    win_home = 0
-    win_away = 0
-    total = 0
+    gols = []
+    btts = 0
 
-    for j in jogos_home:
+    for j in jogos:
         g1 = j["goals"]["home"]
         g2 = j["goals"]["away"]
+
         if g1 is None or g2 is None:
             continue
-        total += 1
-        if g1 > g2:
-            win_home += 1
 
-    for j in jogos_away:
-        g1 = j["goals"]["home"]
-        g2 = j["goals"]["away"]
-        if g1 is None or g2 is None:
-            continue
-        total += 1
-        if g2 > g1:
-            win_away += 1
+        total = g1 + g2
+        gols.append(total)
 
-    if total < 6:
+        if g1 > 0 and g2 > 0:
+            btts += 1
+
+    if len(gols) < 5:
         return fallback(home, away)
 
-    prob_home = win_home / (len(jogos_home) or 1)
-    prob_away = win_away / (len(jogos_away) or 1)
+    total = len(gols)
+    media = sum(gols) / total
 
-    if prob_home >= prob_away:
-        escolha = "Casa vence 🏠"
-        prob = prob_home
-    else:
-        escolha = "Fora vence ✈️"
-        prob = prob_away
+    probs = {
+        "Over 1.5": sum(g >= 2 for g in gols) / total,
+        "Over 2.5": sum(g >= 3 for g in gols) / total,
+        "Under 2.5": sum(g <= 2 for g in gols) / total,
+        "Ambas Marcam": btts / total
+    }
+
+    melhor = max(probs, key=probs.get)
+    prob = probs[melhor]
 
     if prob >= 0.75:
         nivel = "🔥 FORTE"
@@ -148,87 +162,92 @@ def analisar(home, away):
     else:
         nivel = "⚠️ RISCO"
 
+    liga = fixture["league"]["name"]
+
     return f"""🔎 ANÁLISE
 
-⚽ {jogo["teams"]["home"]["name"]} x {jogo["teams"]["away"]["name"]}
+⚽ {fixture["teams"]["home"]["name"]} x {fixture["teams"]["away"]["name"]}
+🏆 {liga}
 
-🎯 {escolha}
-📊 {int(prob*100)}%
+📊 Probabilidades:
+* Over 1.5: {int(probs["Over 1.5"]*100)}%
+* Over 2.5: {int(probs["Over 2.5"]*100)}%
+* Under 2.5: {int(probs["Under 2.5"]*100)}%
+* Ambas: {int(probs["Ambas Marcam"]*100)}%
 
-{nivel}"""
+🎯 Melhor entrada: {melhor}
+📈 {int(prob*100)}%
 
-# ================= FALLBACK =================
+{nivel}
+"""
+
+# ========= FALLBACK =========
 def fallback(home, away):
-    return f"""🔎 ANÁLISE (Fallback)
+    return f"""🔎 ANÁLISE (Estimativa)
 
 ⚽ {home} x {away}
 
-🎯 Casa vence 🏠
-📊 60%
+📊 Over 1.5: 65%
+📊 Over 2.5: 50%
+📊 Under 2.5: 50%
+📊 Ambas: 55%
 
 ⚠️ Dados limitados"""
 
-# ================= MANUAL =================
+# ========= MANUAL =========
 def manual(texto):
+
     partes = re.split(r"x|vs|versus", texto.lower())
 
     if len(partes) != 2:
         return "⚠️ Use: time x time"
 
-    h = partes[0].strip()
-    a = partes[1].strip()
+    home = partes[0].strip()
+    away = partes[1].strip()
 
-    return analisar(h, a)
+    return analisar(home, away)
 
-# ================= AUTO =================
+# ========= AUTO =========
 def auto():
     while True:
         try:
-            agora = datetime.utcnow()
-            lista = []
+            hoje = datetime.utcnow().strftime("%Y-%m-%d")
+            data = req("https://v3.football.api-sports.io/fixtures", {"date": hoje})
 
-            for i in range(2):
-                data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
+            if not data or "response" not in data:
+                enviar("⚠️ API sem resposta")
+                time.sleep(AUTO_INTERVALO)
+                continue
 
-                data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
-                if not data:
+            enviados = 0
+
+            for j in data["response"]:
+
+                if j["fixture"]["status"]["short"] != "NS":
                     continue
 
-                for j in data.get("response", []):
-                    fid = j["fixture"]["id"]
+                res = analisar(
+                    j["teams"]["home"]["name"],
+                    j["teams"]["away"]["name"]
+                )
 
-                    if fid in enviados:
-                        continue
+                enviar("🤖 AUTO\n\n" + res)
+                enviados += 1
 
-                    dt = datetime.fromisoformat(j["fixture"]["date"].replace("Z", "+00:00"))
+                if enviados >= 5:
+                    break
 
-                    diff = (dt - agora).total_seconds() / 60
-
-                    if diff < JANELA_MIN or diff > JANELA_MAX:
-                        continue
-
-                    res = analisar(
-                        j["teams"]["home"]["name"],
-                        j["teams"]["away"]["name"]
-                    )
-
-                    lista.append((res, fid))
-
-            for r, fid in lista[:5]:
-                enviar("🤖 AUTO\n\n" + r)
-                enviados.add(fid)
-
-            if not lista:
-                enviar("⚠️ AUTO: Nenhum jogo encontrado")
+            if enviados == 0:
+                enviar("⚠️ Nenhum jogo encontrado")
 
         except Exception as e:
-            enviar(f"❌ ERRO: {e}")
+            enviar(f"Erro AUTO: {e}")
 
         time.sleep(AUTO_INTERVALO)
 
-# ================= MAIN =================
+# ========= MAIN =========
 def main():
-    global last_update_id
+    last_update_id = None
 
     enviar("🤖 BOT ONLINE")
 
@@ -246,14 +265,16 @@ def main():
                     continue
 
                 texto = u["message"].get("text", "")
-                enviar(manual(texto))
+
+                resposta = manual(texto)
+                enviar(resposta)
 
         except:
             pass
 
         time.sleep(2)
 
-# ================= START =================
+# ========= START =========
 if __name__ == "__main__":
-    threading.Thread(target=auto).start()
+    threading.Thread(target=auto, daemon=True).start()
     main()
