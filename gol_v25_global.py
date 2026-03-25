@@ -3,23 +3,26 @@ import time
 import threading
 from datetime import datetime, timedelta
 import unicodedata
+from difflib import SequenceMatcher
 import re
 
 # ================= CONFIG =================
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
+
 HEADERS = {"x-apisports-key": API_KEY}
 
 AUTO_INTERVALO = 1800
 
-last_update_id = None
-
 # ================= UTILS =================
-def normalizar(nome):
-    nome = nome.lower().strip()
-    nome = unicodedata.normalize('NFKD', nome)
-    return nome.encode('ASCII', 'ignore').decode('ASCII')
+def normalizar(txt):
+    txt = txt.lower().strip()
+    txt = unicodedata.normalize('NFKD', txt)
+    return txt.encode('ASCII', 'ignore').decode('ASCII')
+
+def similar(a, b):
+    return SequenceMatcher(None, a, b).ratio()
 
 def req(url, params=None):
     try:
@@ -27,27 +30,51 @@ def req(url, params=None):
         if r.status_code == 200:
             return r.json()
     except:
-        return None
+        pass
     return None
 
 def enviar(msg):
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": msg}
-        )
-    except:
-        pass
+    requests.post(
+        f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+        data={"chat_id": CHAT_ID, "text": msg}
+    )
 
-# ================= BUSCAR TIME =================
-def buscar_time(nome):
-    nome = normalizar(nome)
+# ================= BUSCA INTELIGENTE =================
+def buscar_jogo(home, away):
 
-    data = req("https://v3.football.api-sports.io/teams", {"search": nome})
-    if not data or not data.get("response"):
-        return None
+    home = normalizar(home)
+    away = normalizar(away)
 
-    return data["response"][0]["team"]["id"]
+    melhor = None
+    melhor_score = 0
+
+    for i in range(3):  # hoje + 2 dias
+        data = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
+
+        res = req("https://v3.football.api-sports.io/fixtures", {"date": data})
+        if not res:
+            continue
+
+        for j in res["response"]:
+            h = normalizar(j["teams"]["home"]["name"])
+            a = normalizar(j["teams"]["away"]["name"])
+
+            score = (
+                similar(home, h) +
+                similar(away, a)
+            ) / 2
+
+            # bônus por palavra chave
+            if home.split()[0] in h:
+                score += 0.1
+            if away.split()[0] in a:
+                score += 0.1
+
+            if score > melhor_score:
+                melhor_score = score
+                melhor = j
+
+    return melhor  # SEM BLOQUEIO
 
 # ================= HISTÓRICO =================
 def historico(team_id):
@@ -55,16 +82,18 @@ def historico(team_id):
         "team": team_id,
         "last": 10
     })
-    return data.get("response", []) if data else []
+    return data["response"] if data else []
 
-# ================= ANALISE PROFISSIONAL =================
+# ================= ANÁLISE =================
 def analisar(home, away):
 
-    home_id = buscar_time(home)
-    away_id = buscar_time(away)
+    jogo = buscar_jogo(home, away)
 
-    if not home_id or not away_id:
-        return "❌ Não consegui identificar os times"
+    if not jogo:
+        return "❌ Nenhum jogo parecido encontrado"
+
+    home_id = jogo["teams"]["home"]["id"]
+    away_id = jogo["teams"]["away"]["id"]
 
     jogos = historico(home_id) + historico(away_id)
 
@@ -85,130 +114,96 @@ def analisar(home, away):
             btts += 1
 
     if len(gols) < 4:
-        return "⚠️ Poucos dados — tendência neutra"
+        return "⚠️ Poucos dados, análise fraca"
 
     total = len(gols)
     media = sum(gols) / total
 
-    over15 = sum(g >= 2 for g in gols) / total
-    over25 = sum(g >= 3 for g in gols) / total
-    under25 = sum(g <= 2 for g in gols) / total
-    btts_p = btts / total
+    probs = {
+        "Over 1.5": sum(g >= 2 for g in gols) / total,
+        "Over 2.5": sum(g >= 3 for g in gols) / total,
+        "Under 2.5": sum(g <= 2 for g in gols) / total,
+        "Ambas Marcam": btts / total
+    }
 
-    # ================= DECISÃO INTELIGENTE =================
-    if over25 >= 0.65 and media >= 2.8:
-        pick = "Over 2.5"
-        prob = over25
+    melhor = max(probs, key=probs.get)
+    prob = probs[melhor]
 
-    elif btts_p >= 0.65:
-        pick = "Ambas Marcam"
-        prob = btts_p
-
-    elif under25 >= 0.65 and media <= 2.2:
-        pick = "Under 2.5"
-        prob = under25
-
-    else:
-        pick = "Over 1.5"
-        prob = over15
-
-    # ================= NÍVEL =================
     if prob >= 0.80:
         nivel = "🔥 FORTE"
-    elif prob >= 0.70:
+    elif prob >= 0.65:
         nivel = "⚖️ MÉDIA"
     else:
         nivel = "⚠️ ARRISCADO"
 
-    return {
-        "texto": f"""🧠 ANÁLISE
+    return f"""🔎 ANÁLISE
 
-⚽ {home.title()} x {away.title()}
+⚽ {jogo["teams"]["home"]["name"]} x {jogo["teams"]["away"]["name"]}
+🏆 {jogo["league"]["name"]}
 
-🎯 {pick}
+🎯 {melhor}
 📊 {int(prob*100)}%
-📈 Média gols: {round(media,2)}
+📈 Média: {round(media,2)}
 
-{nivel}""",
-        "prob": prob
-    }
-
-# ================= MULTIPLA PROFISSIONAL =================
-def gerar_multipla():
-
-    candidatos = []
-
-    for i in range(2):
-        data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
-
-        data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
-        if not data:
-            continue
-
-        for j in data.get("response", []):
-
-            home = j["teams"]["home"]["name"]
-            away = j["teams"]["away"]["name"]
-
-            res = analisar(home, away)
-
-            if isinstance(res, dict) and res["prob"] >= 0.70:
-                candidatos.append((home, away, res))
-
-    candidatos.sort(key=lambda x: x[2]["prob"], reverse=True)
-
-    tamanho = 7 if len(candidatos) >= 7 else len(candidatos)
-
-    if tamanho < 5:
-        return "⚠️ Poucos jogos bons hoje"
-
-    picks = candidatos[:tamanho]
-
-    msg = f"💰 MÚLTIPLA ({tamanho} jogos)\n\n"
-
-    for i, (h, a, r) in enumerate(picks, 1):
-        msg += f"{i}. {h} x {a}\n🎯 {r['texto'].split('🎯')[1].splitlines()[0]}\n\n"
-
-    msg += "💵 Sugestão: R$5 a R$10"
-
-    return msg
+{nivel}"""
 
 # ================= MANUAL =================
 def manual(texto):
 
-    texto = texto.lower().strip()
-
-    if texto == "/multipla":
-        return gerar_multipla()
-
-    partes = re.split(r"x|vs|versus", texto)
+    partes = re.split(r"x|vs|versus", texto.lower())
 
     if len(partes) != 2:
         return "⚠️ Use: time x time"
 
-    h = partes[0].strip()
-    a = partes[1].strip()
+    home = partes[0].strip()
+    away = partes[1].strip()
 
-    res = analisar(h, a)
+    return analisar(home, away)
 
-    if isinstance(res, dict):
-        return res["texto"]
-    else:
-        return res
+# ================= MULTIPLA =================
+def gerar_multipla():
+
+    jogos = []
+
+    res = req("https://v3.football.api-sports.io/fixtures", {
+        "date": datetime.utcnow().strftime("%Y-%m-%d")
+    })
+
+    if not res:
+        return "❌ Erro ao buscar jogos"
+
+    for j in res["response"][:30]:
+
+        analise = analisar(
+            j["teams"]["home"]["name"],
+            j["teams"]["away"]["name"]
+        )
+
+        if "ANÁLISE" in analise:
+            jogos.append(analise)
+
+        if len(jogos) >= 7:
+            break
+
+    if len(jogos) < 7:
+        return "⚠️ Poucos jogos para múltipla"
+
+    return "🎰 MÚLTIPLA (7 jogos)\n\n" + "\n\n".join(jogos[:7])
 
 # ================= AUTO =================
 def auto():
     while True:
         try:
-            enviar("🤖 AUTO\n\n" + gerar_multipla())
+            msg = gerar_multipla()
+            enviar(msg)
         except Exception as e:
-            enviar(f"❌ ERRO AUTO: {e}")
+            enviar(f"Erro: {e}")
 
         time.sleep(AUTO_INTERVALO)
 
 # ================= MAIN =================
 def main():
-    global last_update_id
+    last_update_id = None
 
     enviar("🤖 BOT ONLINE")
 
@@ -226,7 +221,11 @@ def main():
                     continue
 
                 texto = u["message"].get("text", "")
-                enviar(manual(texto))
+
+                if texto.lower() == "multipla":
+                    enviar(gerar_multipla())
+                else:
+                    enviar(manual(texto))
 
         except:
             pass
