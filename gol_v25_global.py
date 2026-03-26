@@ -1,7 +1,7 @@
 import requests
 import time
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import unicodedata
 from difflib import SequenceMatcher
 
@@ -9,12 +9,11 @@ from difflib import SequenceMatcher
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
-
 HEADERS = {"x-apisports-key": API_KEY}
 
 AUTO_INTERVALO = 1800
 JANELA_MIN = 5
-JANELA_MAX = 1440  # 24h
+JANELA_MAX = 720
 
 enviados_ids = set()
 last_update_id = None
@@ -23,15 +22,14 @@ last_update_id = None
 def normalizar(texto):
     texto = texto.lower().strip()
     texto = unicodedata.normalize('NFKD', texto)
-    texto = texto.encode('ASCII', 'ignore').decode('ASCII')
-    return texto
+    return texto.encode('ASCII', 'ignore').decode('ASCII')
 
 def similar(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
 def parse_data(data_str):
     try:
-        return datetime.fromisoformat(data_str.replace("Z", "+00:00")).astimezone()
+        return datetime.fromisoformat(data_str.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
     except:
         return None
 
@@ -53,7 +51,7 @@ def enviar(msg):
     except:
         pass
 
-# ================= BUSCAR JOGO (CORRIGIDO FORTE) =================
+# ================= BUSCAR JOGO =================
 def buscar_fixture(home, away):
 
     home_n = normalizar(home)
@@ -62,8 +60,8 @@ def buscar_fixture(home, away):
     melhor = None
     melhor_score = 0
 
-    for i in range(30):  # 🔥 30 DIAS
-        data_busca = (datetime.now(timezone.utc) + timedelta(days=i)).strftime("%Y-%m-%d")
+    for i in range(30):  # 🔥 AUMENTADO PRA 30 DIAS
+        data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
 
         data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
 
@@ -79,12 +77,12 @@ def buscar_fixture(home, away):
             h = normalizar(j["teams"]["home"]["name"])
             a = normalizar(j["teams"]["away"]["name"])
 
-            # 🔥 SCORE MELHORADO (muito mais flexível)
-            score1 = (similar(home_n, h) + similar(away_n, a)) / 2
-            score2 = (similar(home_n, a) + similar(away_n, h)) / 2
-            score = max(score1, score2)
+            score = max(
+                (similar(home_n, h) + similar(away_n, a)) / 2,
+                (similar(home_n, a) + similar(away_n, h)) / 2
+            )
 
-            # bônus forte por palavra chave
+            # 🔥 BOOST INTELIGENTE
             if home_n.split()[0] in h:
                 score += 0.15
             if away_n.split()[0] in a:
@@ -94,7 +92,7 @@ def buscar_fixture(home, away):
                 melhor_score = score
                 melhor = j
 
-    # 🔥 SCORE REDUZIDO (ANTES 0.45)
+    # 🔥 MAIS FLEXÍVEL
     if melhor_score < 0.30:
         return None
 
@@ -114,10 +112,10 @@ def escolher_entrada(probs):
     if probs["Over 2.5"] >= 0.65:
         return "Over 2.5", probs["Over 2.5"]
 
-    if probs["Ambas Marcam"] >= 0.60:
+    if probs["Ambas Marcam"] >= 0.62:
         return "Ambas Marcam", probs["Ambas Marcam"]
 
-    if probs["Under 2.5"] >= 0.80:
+    if probs["Under 2.5"] >= 0.78:
         return "Under 2.5", probs["Under 2.5"]
 
     if probs["Over 2.5"] >= 0.55:
@@ -145,8 +143,6 @@ def analisar(home, away):
             "nivel": "erro",
             "fixture_id": None
         }
-
-    fid = fixture["fixture"]["id"]
 
     home_id = fixture["teams"]["home"]["id"]
     away_id = fixture["teams"]["away"]["id"]
@@ -221,109 +217,26 @@ def analisar(home, away):
         "prob": prob,
         "entrada": melhor,
         "nivel": nivel,
-        "fixture_id": fid
+        "fixture_id": fixture["fixture"]["id"]
     }
-
-# ================= MULTIPLA =================
-def montar_multipla(candidatos):
-
-    usados = set()
-    filtrados = []
-
-    for c in candidatos:
-        if c["fixture_id"] not in usados:
-            usados.add(c["fixture_id"])
-            filtrados.append(c)
-
-    bons = [c for c in filtrados if c["nivel"] in ["🔥 FORTE", "⚖️ MÉDIA"]]
-
-    if len(bons) < 5:
-        return None
-
-    bons.sort(key=lambda x: x["prob"], reverse=True)
-
-    selecionados = bons[:7]
-
-    msg = "💰 MÚLTIPLA PROFISSIONAL\n\n"
-
-    for c in selecionados:
-        linha = c["msg"].split("\n")[2]
-        msg += f"{linha} → {c['entrada']}\n"
-
-    msg += "\n💵 Entrada sugerida: R$5 a R$10"
-
-    return msg
-
-# ================= AUTO =================
-def auto():
-    while True:
-        try:
-            agora = datetime.now(timezone.utc)
-            candidatos = []
-
-            for i in range(2):
-                data_busca = (datetime.now(timezone.utc) + timedelta(days=i)).strftime("%Y-%m-%d")
-
-                data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
-
-                if not data:
-                    continue
-
-                for j in data.get("response", []):
-
-                    fid = j["fixture"]["id"]
-
-                    if fid in enviados_ids:
-                        continue
-
-                    dt = parse_data(j["fixture"]["date"])
-                    if not dt:
-                        continue
-
-                    diff = (dt - agora).total_seconds() / 60
-
-                    if diff < JANELA_MIN or diff > JANELA_MAX:
-                        continue
-
-                    res = analisar(
-                        j["teams"]["home"]["name"],
-                        j["teams"]["away"]["name"]
-                    )
-
-                    if res["prob"] > 0:
-                        candidatos.append(res)
-                        enviados_ids.add(fid)
-
-            candidatos.sort(key=lambda x: x["prob"], reverse=True)
-
-            for c in candidatos[:5]:
-                enviar("🤖 AUTO\n\n" + c["msg"])
-
-            multi = montar_multipla(candidatos)
-
-            if multi:
-                enviar(multi)
-
-        except Exception as e:
-            enviar(f"❌ ERRO AUTO: {e}")
-
-        time.sleep(AUTO_INTERVALO)
 
 # ================= MANUAL =================
 def manual(texto):
-    texto = normalizar(texto)
+    try:
+        texto = normalizar(texto)
 
-    if " x " in texto:
-        partes = texto.split(" x ")
-    elif " vs " in texto:
-        partes = texto.split(" vs ")
-    else:
-        return "⚠️ Use: time x time"
+        if " x " in texto:
+            partes = texto.split(" x ")
+        else:
+            return "⚠️ Use: time x time"
 
-    if len(partes) != 2:
-        return "⚠️ Use: time x time"
+        if len(partes) != 2:
+            return "⚠️ Use: time x time"
 
-    return "🧠 MANUAL\n\n" + analisar(partes[0], partes[1])["msg"]
+        return "🧠 MANUAL\n\n" + analisar(partes[0], partes[1])["msg"]
+
+    except:
+        return "⚠️ Erro no comando"
 
 # ================= MAIN =================
 def main():
@@ -335,7 +248,7 @@ def main():
         try:
             r = requests.get(
                 f"https://api.telegram.org/bot{TOKEN}/getUpdates",
-                params={"offset": last_update_id or 0}
+                params={"offset": last_update_id}
             ).json()
 
             for u in r.get("result", []):
@@ -354,5 +267,4 @@ def main():
 
 # ================= START =================
 if __name__ == "__main__":
-    threading.Thread(target=auto).start()
     main()
