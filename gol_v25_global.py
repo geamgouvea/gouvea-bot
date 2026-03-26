@@ -1,15 +1,15 @@
 import requests
 import time
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import unicodedata
 from difflib import SequenceMatcher
-import re
 
 # ================= CONFIG =================
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
-API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5
+API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
+
 HEADERS = {"x-apisports-key": API_KEY}
 
 AUTO_INTERVALO = 1800
@@ -17,6 +17,7 @@ JANELA_MIN = 5
 JANELA_MAX = 720
 
 enviados_ids = set()
+cache_jogos = {}
 last_update_id = None
 
 # ================= UTILS =================
@@ -30,7 +31,7 @@ def similar(a, b):
 
 def parse_data(data_str):
     try:
-        return datetime.fromisoformat(data_str.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
+        return datetime.fromisoformat(data_str.replace("Z", "+00:00")).astimezone(timezone.utc)
     except:
         return None
 
@@ -60,7 +61,7 @@ def buscar_fixture(home, away):
     melhor = None
     melhor_score = 0
 
-    for i in range(15):
+    for i in range(30):  # AUMENTADO
         data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
         data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
 
@@ -81,16 +82,17 @@ def buscar_fixture(home, away):
                 (similar(home_n, a) + similar(away_n, h)) / 2
             )
 
+            # peso forte por palavra-chave
             if home_n.split()[0] in h:
-                score += 0.1
+                score += 0.2
             if away_n.split()[0] in a:
-                score += 0.1
+                score += 0.2
 
             if score > melhor_score:
                 melhor_score = score
                 melhor = j
 
-    if melhor_score < 0.45:
+    if melhor_score < 0.50:
         return None
 
     return melhor
@@ -109,10 +111,10 @@ def escolher_entrada(probs):
     if probs["Over 2.5"] >= 0.65:
         return "Over 2.5", probs["Over 2.5"]
 
-    if probs["Ambas Marcam"] >= 0.62:
+    if probs["Ambas Marcam"] >= 0.60:
         return "Ambas Marcam", probs["Ambas Marcam"]
 
-    if probs["Under 2.5"] >= 0.78:
+    if probs["Under 2.5"] >= 0.80:
         return "Under 2.5", probs["Under 2.5"]
 
     if probs["Over 2.5"] >= 0.55:
@@ -140,6 +142,12 @@ def analisar(home, away):
             "nivel": "erro",
             "fixture_id": None
         }
+
+    fid = fixture["fixture"]["id"]
+
+    # ANTI REPETIÇÃO FORTE
+    if fid in cache_jogos:
+        return cache_jogos[fid]
 
     home_id = fixture["teams"]["home"]["id"]
     away_id = fixture["teams"]["away"]["id"]
@@ -186,8 +194,8 @@ def analisar(home, away):
 
     dt = parse_data(fixture["fixture"]["date"])
 
-    data_str = dt.strftime("%d/%m") if dt else "-"
-    hora_str = dt.strftime("%H:%M") if dt else "-"
+    data_str = dt.astimezone().strftime("%d/%m") if dt else "-"
+    hora_str = dt.astimezone().strftime("%H:%M") if dt else "-"
 
     liga = f'{fixture["league"]["name"]} ({fixture["league"]["country"]})'
 
@@ -209,25 +217,27 @@ def analisar(home, away):
 
 {nivel}"""
 
-    return {
+    resultado = {
         "msg": msg,
         "prob": prob,
         "entrada": melhor,
         "nivel": nivel,
-        "fixture_id": fixture["fixture"]["id"]
+        "fixture_id": fid
     }
+
+    cache_jogos[fid] = resultado
+    return resultado
 
 # ================= MULTIPLA =================
 def montar_multipla(candidatos):
 
     bons = [c for c in candidatos if c["nivel"] in ["🔥 FORTE", "⚖️ MÉDIA"]]
 
-    if len(bons) < 7:
+    if len(bons) < 5:
         return None
 
     bons.sort(key=lambda x: x["prob"], reverse=True)
-
-    selecionados = bons[:7]
+    selecionados = bons[:6]
 
     msg = "💰 MÚLTIPLA PROFISSIONAL\n\n"
 
@@ -243,7 +253,7 @@ def montar_multipla(candidatos):
 def auto():
     while True:
         try:
-            agora = datetime.now()
+            agora = datetime.now(timezone.utc)
             candidatos = []
 
             for i in range(2):
@@ -282,7 +292,8 @@ def auto():
 
             for c in candidatos[:5]:
                 enviar("🤖 AUTO\n\n" + c["msg"])
-                enviados_ids.add(c["fixture_id"])
+                if c["fixture_id"]:
+                    enviados_ids.add(c["fixture_id"])
 
             multi = montar_multipla(candidatos)
 
@@ -303,8 +314,6 @@ def manual(texto):
             partes = texto.split(" x ")
         elif " vs " in texto:
             partes = texto.split(" vs ")
-        elif " versus " in texto:
-            partes = texto.split(" versus ")
         else:
             return "⚠️ Use: time x time"
 
