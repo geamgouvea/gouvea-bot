@@ -60,7 +60,7 @@ def buscar_fixture(home, away):
     melhor = None
     melhor_score = 0
 
-    for i in range(10):
+    for i in range(15):  # busca até 15 dias
         data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
         data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
 
@@ -76,24 +76,33 @@ def buscar_fixture(home, away):
             h = normalizar(j["teams"]["home"]["name"])
             a = normalizar(j["teams"]["away"]["name"])
 
+            # MATCH DIRETO
+            if home_n in h and away_n in a:
+                return j
+            if home_n in a and away_n in h:
+                return j
+
+            # MATCH POR PALAVRA
+            if home_n.split()[0] in h and away_n.split()[0] in a:
+                return j
+            if home_n.split()[0] in a and away_n.split()[0] in h:
+                return j
+
+            # SCORE
             score1 = (similar(home_n, h) + similar(away_n, a)) / 2
             score2 = (similar(home_n, a) + similar(away_n, h)) / 2
-
             score = max(score1, score2)
 
             if home_n.split()[0] in h:
-                score += 0.15
+                score += 0.25
             if away_n.split()[0] in a:
-                score += 0.15
+                score += 0.25
 
             if score > melhor_score:
                 melhor_score = score
                 melhor = j
 
-    if melhor_score < 0.40:
-        return None
-
-    return melhor
+    return melhor  # nunca bloqueia
 
 # ================= HISTÓRICO =================
 def historico(team_id):
@@ -227,8 +236,7 @@ def montar_multipla(candidatos):
 
     bons.sort(key=lambda x: x["prob"], reverse=True)
 
-    qtd = min(len(bons), 7)
-    selecionados = bons[:qtd]
+    selecionados = bons[:min(len(bons), 7)]
 
     msg = "💰 MÚLTIPLA PROFISSIONAL\n\n"
 
@@ -249,7 +257,6 @@ def auto():
 
             for i in range(2):
                 data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
-
                 data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
 
                 if not data:
