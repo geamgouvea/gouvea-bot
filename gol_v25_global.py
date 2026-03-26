@@ -1,7 +1,7 @@
 import requests
 import time
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import unicodedata
 from difflib import SequenceMatcher
 
@@ -13,8 +13,8 @@ API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
 HEADERS = {"x-apisports-key": API_KEY}
 
 AUTO_INTERVALO = 1800
-JANELA_MIN = -60
-JANELA_MAX = 1440
+JANELA_MIN = 5
+JANELA_MAX = 1440  # 24h
 
 enviados_ids = set()
 last_update_id = None
@@ -23,16 +23,15 @@ last_update_id = None
 def normalizar(texto):
     texto = texto.lower().strip()
     texto = unicodedata.normalize('NFKD', texto)
-    return texto.encode('ASCII', 'ignore').decode('ASCII')
+    texto = texto.encode('ASCII', 'ignore').decode('ASCII')
+    return texto
 
 def similar(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
 def parse_data(data_str):
     try:
-        return datetime.fromisoformat(
-            data_str.replace("Z", "+00:00")
-        ).astimezone().replace(tzinfo=None)
+        return datetime.fromisoformat(data_str.replace("Z", "+00:00")).astimezone()
     except:
         return None
 
@@ -41,10 +40,8 @@ def req(url, params=None):
         r = requests.get(url, headers=HEADERS, params=params, timeout=10)
         if r.status_code == 200:
             return r.json()
-        else:
-            print("ERRO API:", r.status_code)
-    except Exception as e:
-        print("ERRO REQ:", e)
+    except:
+        pass
     return None
 
 def enviar(msg):
@@ -53,21 +50,23 @@ def enviar(msg):
             f"https://api.telegram.org/bot{TOKEN}/sendMessage",
             data={"chat_id": CHAT_ID, "text": msg}
         )
-    except Exception as e:
-        print("ERRO ENVIO:", e)
+    except:
+        pass
 
-# ================= BUSCAR JOGO =================
+# ================= BUSCAR JOGO (CORRIGIDO FORTE) =================
 def buscar_fixture(home, away):
+
     home_n = normalizar(home)
     away_n = normalizar(away)
 
     melhor = None
     melhor_score = 0
 
-    for i in range(30):  # 🔥 aumentado
-        data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
+    for i in range(30):  # 🔥 30 DIAS
+        data_busca = (datetime.now(timezone.utc) + timedelta(days=i)).strftime("%Y-%m-%d")
 
         data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
+
         if not data:
             continue
 
@@ -80,22 +79,23 @@ def buscar_fixture(home, away):
             h = normalizar(j["teams"]["home"]["name"])
             a = normalizar(j["teams"]["away"]["name"])
 
-            score = max(
-                (similar(home_n, h) + similar(away_n, a)) / 2,
-                (similar(home_n, a) + similar(away_n, h)) / 2
-            )
+            # 🔥 SCORE MELHORADO (muito mais flexível)
+            score1 = (similar(home_n, h) + similar(away_n, a)) / 2
+            score2 = (similar(home_n, a) + similar(away_n, h)) / 2
+            score = max(score1, score2)
 
-            # 🔥 bônus forte
-            if home_n in h or h in home_n:
-                score += 0.3
-            if away_n in a or a in away_n:
-                score += 0.3
+            # bônus forte por palavra chave
+            if home_n.split()[0] in h:
+                score += 0.15
+            if away_n.split()[0] in a:
+                score += 0.15
 
             if score > melhor_score:
                 melhor_score = score
                 melhor = j
 
-    if melhor_score < 0.30:  # 🔥 reduzido
+    # 🔥 SCORE REDUZIDO (ANTES 0.45)
+    if melhor_score < 0.30:
         return None
 
     return melhor
@@ -231,16 +231,18 @@ def montar_multipla(candidatos):
     filtrados = []
 
     for c in candidatos:
-        if c["fixture_id"] not in usados and c["nivel"] in ["🔥 FORTE", "⚖️ MÉDIA"]:
+        if c["fixture_id"] not in usados:
             usados.add(c["fixture_id"])
             filtrados.append(c)
 
-    if len(filtrados) < 5:
+    bons = [c for c in filtrados if c["nivel"] in ["🔥 FORTE", "⚖️ MÉDIA"]]
+
+    if len(bons) < 5:
         return None
 
-    filtrados.sort(key=lambda x: x["prob"], reverse=True)
+    bons.sort(key=lambda x: x["prob"], reverse=True)
 
-    selecionados = filtrados[:7]
+    selecionados = bons[:7]
 
     msg = "💰 MÚLTIPLA PROFISSIONAL\n\n"
 
@@ -256,13 +258,14 @@ def montar_multipla(candidatos):
 def auto():
     while True:
         try:
-            agora = datetime.now()
+            agora = datetime.now(timezone.utc)
             candidatos = []
 
             for i in range(2):
-                data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
+                data_busca = (datetime.now(timezone.utc) + timedelta(days=i)).strftime("%Y-%m-%d")
 
                 data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
+
                 if not data:
                     continue
 
@@ -291,8 +294,6 @@ def auto():
                         candidatos.append(res)
                         enviados_ids.add(fid)
 
-            print("AUTO encontrou:", len(candidatos))
-
             candidatos.sort(key=lambda x: x["prob"], reverse=True)
 
             for c in candidatos[:5]:
@@ -312,10 +313,12 @@ def auto():
 def manual(texto):
     texto = normalizar(texto)
 
-    if " x " not in texto:
+    if " x " in texto:
+        partes = texto.split(" x ")
+    elif " vs " in texto:
+        partes = texto.split(" vs ")
+    else:
         return "⚠️ Use: time x time"
-
-    partes = texto.split(" x ")
 
     if len(partes) != 2:
         return "⚠️ Use: time x time"
