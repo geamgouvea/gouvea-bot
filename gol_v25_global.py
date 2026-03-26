@@ -4,40 +4,20 @@ import threading
 from datetime import datetime, timedelta
 import unicodedata
 from difflib import SequenceMatcher
-import json
-import os
+import re
 
 # ================= CONFIG =================
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
-API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
+API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5
 HEADERS = {"x-apisports-key": API_KEY}
 
 AUTO_INTERVALO = 1800
 JANELA_MIN = 5
 JANELA_MAX = 720
 
-ARQ_ENVIADOS = "enviados.json"
+enviados_ids = set()
 last_update_id = None
-
-# ================= CONTROLE DE ENVIADOS =================
-def carregar_enviados():
-    if os.path.exists(ARQ_ENVIADOS):
-        try:
-            with open(ARQ_ENVIADOS, "r") as f:
-                return set(json.load(f))
-        except:
-            return set()
-    return set()
-
-def salvar_enviados():
-    try:
-        with open(ARQ_ENVIADOS, "w") as f:
-            json.dump(list(enviados_ids), f)
-    except:
-        pass
-
-enviados_ids = carregar_enviados()
 
 # ================= UTILS =================
 def normalizar(texto):
@@ -50,7 +30,7 @@ def similar(a, b):
 
 def parse_data(data_str):
     try:
-        return datetime.fromisoformat(data_str.replace("Z", "+00:00")).astimezone()
+        return datetime.fromisoformat(data_str.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
     except:
         return None
 
@@ -96,28 +76,22 @@ def buscar_fixture(home, away):
             h = normalizar(j["teams"]["home"]["name"])
             a = normalizar(j["teams"]["away"]["name"])
 
-            if home_n in h and away_n in a:
-                return j
-            if home_n in a and away_n in h:
-                return j
-
-            if home_n.split()[0] in h and away_n.split()[0] in a:
-                return j
-            if home_n.split()[0] in a and away_n.split()[0] in h:
-                return j
-
-            score1 = (similar(home_n, h) + similar(away_n, a)) / 2
-            score2 = (similar(home_n, a) + similar(away_n, h)) / 2
-            score = max(score1, score2)
+            score = max(
+                (similar(home_n, h) + similar(away_n, a)) / 2,
+                (similar(home_n, a) + similar(away_n, h)) / 2
+            )
 
             if home_n.split()[0] in h:
-                score += 0.25
+                score += 0.1
             if away_n.split()[0] in a:
-                score += 0.25
+                score += 0.1
 
             if score > melhor_score:
                 melhor_score = score
                 melhor = j
+
+    if melhor_score < 0.45:
+        return None
 
     return melhor
 
@@ -129,25 +103,25 @@ def historico(team_id):
     })
     return data.get("response", []) if data else []
 
-# ================= DECISÃO =================
+# ================= DECISÃO AGRESSIVA =================
 def escolher_entrada(probs):
 
-    if probs["Over 2.5"] >= 0.70:
+    if probs["Over 2.5"] >= 0.65:
         return "Over 2.5", probs["Over 2.5"]
 
-    if probs["Ambas Marcam"] >= 0.65:
+    if probs["Ambas Marcam"] >= 0.62:
         return "Ambas Marcam", probs["Ambas Marcam"]
 
-    if probs["Under 2.5"] >= 0.80:
+    if probs["Under 2.5"] >= 0.78:
         return "Under 2.5", probs["Under 2.5"]
 
-    if probs["Over 2.5"] >= 0.60:
+    if probs["Over 2.5"] >= 0.55:
         return "Over 2.5", probs["Over 2.5"]
 
-    if probs["Ambas Marcam"] >= 0.60:
+    if probs["Ambas Marcam"] >= 0.55:
         return "Ambas Marcam", probs["Ambas Marcam"]
 
-    if probs["Over 1.5"] >= 0.78:
+    if probs["Over 1.5"] >= 0.75:
         return "Over 1.5", probs["Over 1.5"]
 
     melhor = max(probs, key=probs.get)
@@ -246,14 +220,14 @@ def analisar(home, away):
 # ================= MULTIPLA =================
 def montar_multipla(candidatos):
 
-    bons = [c for c in candidatos if c["prob"] >= 0.65]
+    bons = [c for c in candidatos if c["nivel"] in ["🔥 FORTE", "⚖️ MÉDIA"]]
 
-    if len(bons) < 4:
+    if len(bons) < 7:
         return None
 
     bons.sort(key=lambda x: x["prob"], reverse=True)
 
-    selecionados = bons[:min(len(bons), 7)]
+    selecionados = bons[:7]
 
     msg = "💰 MÚLTIPLA PROFISSIONAL\n\n"
 
@@ -261,7 +235,7 @@ def montar_multipla(candidatos):
         linha = c["msg"].split("\n")[2]
         msg += f"{linha} → {c['entrada']}\n"
 
-    msg += "\n💵 Entrada sugerida: R$5 a R$20"
+    msg += "\n💵 Entrada sugerida: R$5 a R$10"
 
     return msg
 
@@ -274,6 +248,7 @@ def auto():
 
             for i in range(2):
                 data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
+
                 data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
 
                 if not data:
@@ -300,7 +275,7 @@ def auto():
                         j["teams"]["away"]["name"]
                     )
 
-                    if res["prob"] >= 0.60:
+                    if res["prob"] > 0:
                         candidatos.append(res)
 
             candidatos.sort(key=lambda x: x["prob"], reverse=True)
@@ -308,7 +283,6 @@ def auto():
             for c in candidatos[:5]:
                 enviar("🤖 AUTO\n\n" + c["msg"])
                 enviados_ids.add(c["fixture_id"])
-                salvar_enviados()
 
             multi = montar_multipla(candidatos)
 
