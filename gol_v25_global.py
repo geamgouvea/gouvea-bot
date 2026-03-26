@@ -9,6 +9,7 @@ from difflib import SequenceMatcher
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
+
 HEADERS = {"x-apisports-key": API_KEY}
 
 AUTO_INTERVALO = 1800
@@ -18,25 +19,15 @@ JANELA_MAX = 720
 enviados_ids = set()
 last_update_id = None
 
-# ================= NORMALIZAR =================
+# ================= UTILS =================
 def normalizar(texto):
     texto = texto.lower().strip()
     texto = unicodedata.normalize('NFKD', texto)
-    texto = texto.encode('ASCII', 'ignore').decode('ASCII')
-
-    # Correções inteligentes
-    texto = texto.replace("munique", "munich")
-    texto = texto.replace("bayern de munique", "bayern munich")
-    texto = texto.replace("inter de milao", "inter")
-    texto = texto.replace("roma", "as roma")
-    texto = texto.replace("juventus", "juve")
-
-    return texto
+    return texto.encode('ASCII', 'ignore').decode('ASCII')
 
 def similar(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
-# ================= REQUEST =================
 def req(url, params=None):
     try:
         r = requests.get(url, headers=HEADERS, params=params, timeout=10)
@@ -46,7 +37,6 @@ def req(url, params=None):
         pass
     return None
 
-# ================= TELEGRAM =================
 def enviar(msg):
     try:
         requests.post(
@@ -56,60 +46,73 @@ def enviar(msg):
     except:
         pass
 
-# ================= BUSCAR JOGO (CORRIGIDO) =================
+# ================= BUSCAR TIME =================
+def buscar_time_id(nome):
+    data = req("https://v3.football.api-sports.io/teams", {"search": nome})
+    if not data or not data.get("response"):
+        return None
+    return data["response"][0]["team"]["id"]
+
+# ================= BUSCAR JOGO (HÍBRIDO) =================
 def buscar_fixture(home, away):
 
     home_n = normalizar(home)
     away_n = normalizar(away)
 
+    home_id = buscar_time_id(home)
+    away_id = buscar_time_id(away)
+
+    # ================= MÉTODO 1 (POR TIME) =================
+    if home_id:
+        data = req("https://v3.football.api-sports.io/fixtures", {
+            "team": home_id,
+            "next": 20
+        })
+
+        if data:
+            for j in data.get("response", []):
+                h = normalizar(j["teams"]["home"]["name"])
+                a = normalizar(j["teams"]["away"]["name"])
+
+                if (home_n in h and away_n in a) or (home_n in a and away_n in h):
+                    return j
+
+    # ================= MÉTODO 2 (POR DATA - FALLBACK) =================
     melhor = None
     melhor_score = 0
 
-    # 🔥 BUSCA 30 DIAS
     for i in range(30):
-
         data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
 
-        data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
+        data = req("https://v3.football.api-sports.io/fixtures", {
+            "date": data_busca
+        })
 
         if not data:
             continue
 
         for j in data.get("response", []):
-
-            status = j["fixture"]["status"]["short"]
-            if status in ["FT", "CANC"]:
-                continue
-
             h = normalizar(j["teams"]["home"]["name"])
             a = normalizar(j["teams"]["away"]["name"])
 
-            score1 = (similar(home_n, h) + similar(away_n, a)) / 2
-            score2 = (similar(home_n, a) + similar(away_n, h)) / 2
+            score = max(
+                (similar(home_n, h) + similar(away_n, a)) / 2,
+                (similar(home_n, a) + similar(away_n, h)) / 2
+            )
 
-            score = max(score1, score2)
-
-            # 🔥 BOOST forte se bater palavra chave
             if home_n.split()[0] in h:
                 score += 0.2
             if away_n.split()[0] in a:
-                score += 0.2
-
-            # 🔥 boost extra se contém parte do nome
-            if home_n in h or h in home_n:
-                score += 0.2
-            if away_n in a or a in away_n:
                 score += 0.2
 
             if score > melhor_score:
                 melhor_score = score
                 melhor = j
 
-    # 🔥 LIMIAR REDUZIDO
-    if melhor_score < 0.35:
-        return None
+    if melhor_score >= 0.35:
+        return melhor
 
-    return melhor
+    return None
 
 # ================= HISTÓRICO =================
 def historico(team_id):
@@ -172,8 +175,7 @@ def analisar(home, away):
         if g1 is None or g2 is None:
             continue
 
-        total = g1 + g2
-        gols.append(total)
+        gols.append(g1 + g2)
 
         if g1 > 0 and g2 > 0:
             btts += 1
@@ -227,24 +229,6 @@ def analisar(home, away):
         "fixture_id": fixture["fixture"]["id"]
     }
 
-# ================= MANUAL =================
-def manual(texto):
-    try:
-        texto = normalizar(texto)
-
-        if " x " in texto:
-            partes = texto.split(" x ")
-        else:
-            return "⚠️ Use: time x time"
-
-        if len(partes) != 2:
-            return "⚠️ Use: time x time"
-
-        return "🧠 MANUAL\n\n" + analisar(partes[0], partes[1])["msg"]
-
-    except:
-        return "⚠️ Erro no comando"
-
 # ================= MAIN =================
 def main():
     global last_update_id
@@ -265,7 +249,7 @@ def main():
                     continue
 
                 texto = u["message"].get("text", "")
-                enviar(manual(texto))
+                enviar("🧠 MANUAL\n\n" + analisar(*texto.split(" x "))["msg"])
 
         except:
             pass
