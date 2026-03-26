@@ -4,6 +4,8 @@ import threading
 from datetime import datetime, timedelta
 import unicodedata
 from difflib import SequenceMatcher
+import json
+import os
 
 # ================= CONFIG =================
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
@@ -15,8 +17,27 @@ AUTO_INTERVALO = 1800
 JANELA_MIN = 5
 JANELA_MAX = 720
 
-enviados_ids = set()
+ARQ_ENVIADOS = "enviados.json"
 last_update_id = None
+
+# ================= CONTROLE DE ENVIADOS =================
+def carregar_enviados():
+    if os.path.exists(ARQ_ENVIADOS):
+        try:
+            with open(ARQ_ENVIADOS, "r") as f:
+                return set(json.load(f))
+        except:
+            return set()
+    return set()
+
+def salvar_enviados():
+    try:
+        with open(ARQ_ENVIADOS, "w") as f:
+            json.dump(list(enviados_ids), f)
+    except:
+        pass
+
+enviados_ids = carregar_enviados()
 
 # ================= UTILS =================
 def normalizar(texto):
@@ -53,14 +74,13 @@ def enviar(msg):
 
 # ================= BUSCAR JOGO =================
 def buscar_fixture(home, away):
-
     home_n = normalizar(home)
     away_n = normalizar(away)
 
     melhor = None
     melhor_score = 0
 
-    for i in range(15):  # busca até 15 dias
+    for i in range(15):
         data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
         data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
 
@@ -76,19 +96,16 @@ def buscar_fixture(home, away):
             h = normalizar(j["teams"]["home"]["name"])
             a = normalizar(j["teams"]["away"]["name"])
 
-            # MATCH DIRETO
             if home_n in h and away_n in a:
                 return j
             if home_n in a and away_n in h:
                 return j
 
-            # MATCH POR PALAVRA
             if home_n.split()[0] in h and away_n.split()[0] in a:
                 return j
             if home_n.split()[0] in a and away_n.split()[0] in h:
                 return j
 
-            # SCORE
             score1 = (similar(home_n, h) + similar(away_n, a)) / 2
             score2 = (similar(home_n, a) + similar(away_n, h)) / 2
             score = max(score1, score2)
@@ -102,7 +119,7 @@ def buscar_fixture(home, away):
                 melhor_score = score
                 melhor = j
 
-    return melhor  # nunca bloqueia
+    return melhor
 
 # ================= HISTÓRICO =================
 def historico(team_id):
@@ -291,6 +308,7 @@ def auto():
             for c in candidatos[:5]:
                 enviar("🤖 AUTO\n\n" + c["msg"])
                 enviados_ids.add(c["fixture_id"])
+                salvar_enviados()
 
             multi = montar_multipla(candidatos)
 
