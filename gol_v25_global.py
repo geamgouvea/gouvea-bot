@@ -10,7 +10,6 @@ import re
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
-
 HEADERS = {"x-apisports-key": API_KEY}
 
 AUTO_INTERVALO = 1800
@@ -29,11 +28,10 @@ def normalizar(nome):
 def similar(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
-# 🔥 CORREÇÃO DEFINITIVA DO DATETIME
 def parse_data(data_str):
     try:
         dt = datetime.fromisoformat(data_str.replace("Z", "+00:00"))
-        return dt.replace(tzinfo=None)  # remove timezone
+        return dt.replace(tzinfo=None)
     except:
         return None
 
@@ -107,7 +105,7 @@ def historico(team_id):
     })
     return data.get("response", []) if data else []
 
-# ================= ESCOLHA INTELIGENTE =================
+# ================= ESCOLHA PROFISSIONAL =================
 def escolher_melhor_entrada(probs):
 
     ordenado = sorted(probs.items(), key=lambda x: x[1], reverse=True)
@@ -115,9 +113,11 @@ def escolher_melhor_entrada(probs):
     melhor, prob = ordenado[0]
     segundo, prob2 = ordenado[1]
 
-    if prob - prob2 >= 0.10:
+    # força decisão dominante
+    if prob - prob2 >= 0.12:
         return melhor, prob
 
+    # evita over 1.5 fraco
     if melhor == "Over 1.5" and prob < 0.78:
         return segundo, prob2
 
@@ -166,15 +166,16 @@ def analisar(home, away):
 
     melhor, prob = escolher_melhor_entrada(probs)
 
-    # nível
-    if prob >= 0.85:
+    # filtro profissional
+    if prob < 0.65:
+        nivel = "❌ DESCARTAR"
+    elif prob >= 0.85:
         nivel = "🔥 FORTE"
     elif prob >= 0.72:
         nivel = "⚖️ MÉDIA"
     else:
         nivel = "⚠️ RISCO"
 
-    # DATA E HORA CORRIGIDO
     dt = parse_data(fixture["fixture"]["date"])
     if dt:
         dt_local = dt - timedelta(hours=4)
@@ -186,7 +187,8 @@ def analisar(home, away):
 
     liga = f'{fixture["league"]["name"]} ({fixture["league"]["country"]})'
 
-    return f"""🔎 ANÁLISE
+    return {
+        "texto": f"""🔎 ANÁLISE
 
 ⚽ {fixture["teams"]["home"]["name"]} x {fixture["teams"]["away"]["name"]}
 🏆 {liga}
@@ -202,15 +204,26 @@ def analisar(home, away):
 🎯 Melhor entrada: {melhor}
 📈 {int(prob*100)}%
 
-{nivel}"""
+{nivel}""",
+        "prob": prob,
+        "entrada": melhor,
+        "nivel": nivel,
+        "fixture_id": fixture["fixture"]["id"]
+    }
 
 # ================= FALLBACK =================
 def fallback(home, away):
-    return f"""🔎 ANÁLISE (Estimativa)
+    return {
+        "texto": f"""🔎 ANÁLISE (Estimativa)
 
 ⚽ {home} x {away}
 
-⚠️ Dados insuficientes"""
+⚠️ Dados insuficientes""",
+        "prob": 0,
+        "entrada": "-",
+        "nivel": "erro",
+        "fixture_id": None
+    }
 
 # ================= MANUAL =================
 def manual(texto):
@@ -222,7 +235,39 @@ def manual(texto):
     h = partes[0].strip()
     a = partes[1].strip()
 
-    return analisar(h, a)
+    res = analisar(h, a)
+    return res["texto"]
+
+# ================= MULTIPLA INTELIGENTE =================
+def montar_multipla(candidatos):
+
+    multi = "💰 MÚLTIPLA INTELIGENTE\n\n"
+
+    usados = set()
+    selecionados = []
+
+    for c in candidatos:
+
+        if c["nivel"] in ["⚠️ RISCO", "❌ DESCARTAR"]:
+            continue
+
+        if c["entrada"] in usados and len(usados) >= 2:
+            continue
+
+        selecionados.append(c)
+        usados.add(c["entrada"])
+
+        if len(selecionados) == 7:
+            break
+
+    if len(selecionados) < 5:
+        return None
+
+    for c in selecionados:
+        jogo = c["texto"].split("\n")[2]
+        multi += f"{jogo} → {c['entrada']}\n"
+
+    return multi
 
 # ================= AUTO =================
 def auto():
@@ -259,25 +304,20 @@ def auto():
                         j["teams"]["away"]["name"]
                     )
 
-                    if "Estimativa" in res:
+                    if res["nivel"] in ["⚠️ RISCO", "❌ DESCARTAR"]:
                         continue
 
-                    candidatos.append((res, fid))
+                    candidatos.append(res)
 
-            # ENVIO
-            for c, fid in candidatos[:5]:
-                enviar("🤖 AUTO\n\n" + c)
-                enviados_ids.add(fid)
+            candidatos.sort(key=lambda x: x["prob"], reverse=True)
 
-            # MÚLTIPLA INTELIGENTE
-            if len(candidatos) >= 7:
-                multi = "💰 MÚLTIPLA SUGERIDA\n\n"
+            for c in candidatos[:5]:
+                enviar("🤖 AUTO\n\n" + c["texto"])
+                enviados_ids.add(c["fixture_id"])
 
-                for c, _ in candidatos[:7]:
-                    jogo = c.split("\n")[2]
-                    entrada = c.split("Melhor entrada:")[1].split("\n")[0]
-                    multi += f"{jogo} → {entrada}\n"
+            multi = montar_multipla(candidatos)
 
+            if multi:
                 enviar(multi)
 
         except Exception as e:
