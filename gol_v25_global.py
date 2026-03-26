@@ -9,7 +9,6 @@ from difflib import SequenceMatcher
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
-
 HEADERS = {"x-apisports-key": API_KEY}
 
 AUTO_INTERVALO = 1800
@@ -31,7 +30,7 @@ def similar(a, b):
 
 def parse_data(data_str):
     try:
-        return datetime.fromisoformat(data_str.replace("Z", "+00:00")).astimezone(timezone.utc)
+        return datetime.fromisoformat(data_str.replace("Z", "+00:00"))
     except:
         return None
 
@@ -61,9 +60,12 @@ def buscar_fixture(home, away):
     melhor = None
     melhor_score = 0
 
-    for i in range(30):  # AUMENTADO
+    for i in range(30):
         data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
-        data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
+
+        data = req("https://v3.football.api-sports.io/fixtures", {
+            "date": data_busca
+        })
 
         if not data:
             continue
@@ -77,12 +79,21 @@ def buscar_fixture(home, away):
             h = normalizar(j["teams"]["home"]["name"])
             a = normalizar(j["teams"]["away"]["name"])
 
-            score = max(
-                (similar(home_n, h) + similar(away_n, a)) / 2,
-                (similar(home_n, a) + similar(away_n, h)) / 2
-            )
+            # MATCH FORTE
+            score_home = max(similar(home_n, h), 1.0 if home_n in h else 0)
+            score_away = max(similar(away_n, a), 1.0 if away_n in a else 0)
 
-            # peso forte por palavra-chave
+            score = (score_home + score_away) / 2
+
+            # inverter lados
+            score_inv = (
+                max(similar(home_n, a), 1.0 if home_n in a else 0) +
+                max(similar(away_n, h), 1.0 if away_n in h else 0)
+            ) / 2
+
+            score = max(score, score_inv)
+
+            # bônus palavra-chave
             if home_n.split()[0] in h:
                 score += 0.2
             if away_n.split()[0] in a:
@@ -92,7 +103,7 @@ def buscar_fixture(home, away):
                 melhor_score = score
                 melhor = j
 
-    if melhor_score < 0.50:
+    if melhor_score < 0.35:
         return None
 
     return melhor
@@ -105,7 +116,7 @@ def historico(team_id):
     })
     return data.get("response", []) if data else []
 
-# ================= DECISÃO AGRESSIVA =================
+# ================= DECISÃO =================
 def escolher_entrada(probs):
 
     if probs["Over 2.5"] >= 0.65:
@@ -145,7 +156,6 @@ def analisar(home, away):
 
     fid = fixture["fixture"]["id"]
 
-    # ANTI REPETIÇÃO FORTE
     if fid in cache_jogos:
         return cache_jogos[fid]
 
@@ -194,8 +204,13 @@ def analisar(home, away):
 
     dt = parse_data(fixture["fixture"]["date"])
 
-    data_str = dt.astimezone().strftime("%d/%m") if dt else "-"
-    hora_str = dt.astimezone().strftime("%H:%M") if dt else "-"
+    if dt:
+        dt_local = dt.astimezone()
+        data_str = dt_local.strftime("%d/%m")
+        hora_str = dt_local.strftime("%H:%M")
+    else:
+        data_str = "-"
+        hora_str = "-"
 
     liga = f'{fixture["league"]["name"]} ({fixture["league"]["country"]})'
 
@@ -335,24 +350,28 @@ def main():
         try:
             r = requests.get(
                 f"https://api.telegram.org/bot{TOKEN}/getUpdates",
-                params={"offset": last_update_id or 0}
+                params={"offset": last_update_id + 1 if last_update_id else None},
+                timeout=10
             ).json()
 
             for u in r.get("result", []):
-                last_update_id = u["update_id"] + 1
+                last_update_id = u["update_id"]
 
                 if "message" not in u:
                     continue
 
                 texto = u["message"].get("text", "")
-                enviar(manual(texto))
 
-        except:
-            pass
+                if texto:
+                    resposta = manual(texto)
+                    enviar(resposta)
 
-        time.sleep(2)
+        except Exception as e:
+            print("Erro:", e)
+
+        time.sleep(1)
 
 # ================= START =================
 if __name__ == "__main__":
-    threading.Thread(target=auto).start()
+    threading.Thread(target=auto, daemon=True).start()
     main()
