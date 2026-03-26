@@ -29,9 +29,11 @@ def normalizar(nome):
 def similar(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
+# 🔥 CORREÇÃO DEFINITIVA DO DATETIME
 def parse_data(data_str):
     try:
-        return datetime.fromisoformat(data_str.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(data_str.replace("Z", "+00:00"))
+        return dt.replace(tzinfo=None)  # remove timezone
     except:
         return None
 
@@ -113,11 +115,9 @@ def escolher_melhor_entrada(probs):
     melhor, prob = ordenado[0]
     segundo, prob2 = ordenado[1]
 
-    # só aceita se realmente dominante
     if prob - prob2 >= 0.10:
         return melhor, prob
 
-    # evita over 1.5 automático
     if melhor == "Over 1.5" and prob < 0.78:
         return segundo, prob2
 
@@ -210,7 +210,7 @@ def fallback(home, away):
 
 ⚽ {home} x {away}
 
-⚠️ Poucos dados disponíveis"""
+⚠️ Dados insuficientes"""
 
 # ================= MANUAL =================
 def manual(texto):
@@ -264,10 +264,7 @@ def auto():
 
                     candidatos.append((res, fid))
 
-            # ordena por qualidade
-            candidatos = candidatos[:10]
-
-            # ENVIO NORMAL
+            # ENVIO
             for c, fid in candidatos[:5]:
                 enviar("🤖 AUTO\n\n" + c)
                 enviados_ids.add(fid)
