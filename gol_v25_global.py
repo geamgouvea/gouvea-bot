@@ -10,10 +10,13 @@ import re
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
-HEADERS = {"x-apisports-key": API_KEY}
+HEADERS = {
+    "x-apisports-key": API_KEY,
+    "x-rapidapi-host": "v3.football.api-sports.io"
+}
 
 AUTO_INTERVALO = 1800
-JANELA_MIN = 10
+JANELA_MIN = 5
 JANELA_MAX = 720
 
 enviados_ids = set()
@@ -38,11 +41,13 @@ def similar(a, b):
 # ================= REQUEST =================
 def req(url, params=None):
     try:
-        r = requests.get(url, headers=HEADERS, params=params, timeout=10)
+        r = requests.get(url, headers=HEADERS, params=params, timeout=15)
         if r.status_code == 200:
             return r.json()
-    except:
-        pass
+        else:
+            print("ERRO API:", r.status_code, r.text)
+    except Exception as e:
+        print("ERRO REQUEST:", e)
     return None
 
 # ================= TELEGRAM =================
@@ -52,10 +57,10 @@ def enviar(msg):
             f"https://api.telegram.org/bot{TOKEN}/sendMessage",
             data={"chat_id": CHAT_ID, "text": msg}
         )
-    except:
-        pass
+    except Exception as e:
+        print("ERRO TELEGRAM:", e)
 
-# ================= BUSCAR FIXTURE (CORRIGIDO REAL) =================
+# ================= BUSCAR FIXTURE =================
 def buscar_fixture(home, away):
     home_n = normalizar(home)
     away_n = normalizar(away)
@@ -63,7 +68,7 @@ def buscar_fixture(home, away):
     melhor = None
     melhor_score = 0
 
-    for i in range(30):  # 🔥 AUMENTADO PRA 30 DIAS
+    for i in range(30):  # busca até 30 dias
         data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
 
         data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
@@ -84,18 +89,18 @@ def buscar_fixture(home, away):
 
             final = max(score1, score2)
 
-            # 🔥 BOOST MELHORADO
+            # boost forte
             if home_n.split()[0] in h:
-                final += 0.2
+                final += 0.25
             if away_n.split()[0] in a:
-                final += 0.2
+                final += 0.25
 
             if final > melhor_score:
                 melhor_score = final
                 melhor = j
 
-    # 🔥 SCORE AJUSTADO (ERA 0.60)
-    if melhor_score < 0.45:
+    # score mais flexível (resolve seu problema)
+    if melhor_score < 0.25:
         return None
 
     return melhor
@@ -108,7 +113,7 @@ def historico(team_id):
     })
     return data.get("response", []) if data else []
 
-# ================= ESCOLHA MERCADO =================
+# ================= ESCOLHA =================
 def escolher_mercado(media, probs):
 
     if media >= 3.0 and probs["Over 2.5"] >= 0.65:
@@ -138,7 +143,6 @@ def analisar(home, away):
 
     fid = fixture["fixture"]["id"]
 
-    # 🔥 BLOQUEIO DE REPETIÇÃO GLOBAL
     if fid in enviados_ids:
         return None
 
@@ -163,7 +167,7 @@ def analisar(home, away):
         if g1 > 0 and g2 > 0:
             btts += 1
 
-    if len(gols) < 6:
+    if len(gols) < 5:
         return None
 
     total = len(gols)
@@ -266,6 +270,7 @@ def auto():
 def manual(texto):
     try:
         texto = texto.lower()
+
         partes = re.split(r"x|vs|versus", texto)
 
         if len(partes) != 2:
@@ -306,8 +311,8 @@ def main():
                 texto = u["message"].get("text", "")
                 enviar(manual(texto))
 
-        except:
-            pass
+        except Exception as e:
+            print("ERRO MAIN:", e)
 
         time.sleep(3)
 
