@@ -18,21 +18,25 @@ JANELA_MAX = 720
 enviados_ids = set()
 last_update_id = None
 
-# ================= UTILS =================
+# ================= NORMALIZAR =================
 def normalizar(texto):
     texto = texto.lower().strip()
     texto = unicodedata.normalize('NFKD', texto)
-    return texto.encode('ASCII', 'ignore').decode('ASCII')
+    texto = texto.encode('ASCII', 'ignore').decode('ASCII')
+
+    # Correções inteligentes
+    texto = texto.replace("munique", "munich")
+    texto = texto.replace("bayern de munique", "bayern munich")
+    texto = texto.replace("inter de milao", "inter")
+    texto = texto.replace("roma", "as roma")
+    texto = texto.replace("juventus", "juve")
+
+    return texto
 
 def similar(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
-def parse_data(data_str):
-    try:
-        return datetime.fromisoformat(data_str.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
-    except:
-        return None
-
+# ================= REQUEST =================
 def req(url, params=None):
     try:
         r = requests.get(url, headers=HEADERS, params=params, timeout=10)
@@ -42,6 +46,7 @@ def req(url, params=None):
         pass
     return None
 
+# ================= TELEGRAM =================
 def enviar(msg):
     try:
         requests.post(
@@ -51,7 +56,7 @@ def enviar(msg):
     except:
         pass
 
-# ================= BUSCAR JOGO =================
+# ================= BUSCAR JOGO (CORRIGIDO) =================
 def buscar_fixture(home, away):
 
     home_n = normalizar(home)
@@ -60,7 +65,9 @@ def buscar_fixture(home, away):
     melhor = None
     melhor_score = 0
 
-    for i in range(30):  # 🔥 AUMENTADO PRA 30 DIAS
+    # 🔥 BUSCA 30 DIAS
+    for i in range(30):
+
         data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
 
         data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
@@ -77,23 +84,29 @@ def buscar_fixture(home, away):
             h = normalizar(j["teams"]["home"]["name"])
             a = normalizar(j["teams"]["away"]["name"])
 
-            score = max(
-                (similar(home_n, h) + similar(away_n, a)) / 2,
-                (similar(home_n, a) + similar(away_n, h)) / 2
-            )
+            score1 = (similar(home_n, h) + similar(away_n, a)) / 2
+            score2 = (similar(home_n, a) + similar(away_n, h)) / 2
 
-            # 🔥 BOOST INTELIGENTE
+            score = max(score1, score2)
+
+            # 🔥 BOOST forte se bater palavra chave
             if home_n.split()[0] in h:
-                score += 0.15
+                score += 0.2
             if away_n.split()[0] in a:
-                score += 0.15
+                score += 0.2
+
+            # 🔥 boost extra se contém parte do nome
+            if home_n in h or h in home_n:
+                score += 0.2
+            if away_n in a or a in away_n:
+                score += 0.2
 
             if score > melhor_score:
                 melhor_score = score
                 melhor = j
 
-    # 🔥 MAIS FLEXÍVEL
-    if melhor_score < 0.30:
+    # 🔥 LIMIAR REDUZIDO
+    if melhor_score < 0.35:
         return None
 
     return melhor
@@ -159,7 +172,8 @@ def analisar(home, away):
         if g1 is None or g2 is None:
             continue
 
-        gols.append(g1 + g2)
+        total = g1 + g2
+        gols.append(total)
 
         if g1 > 0 and g2 > 0:
             btts += 1
@@ -187,19 +201,12 @@ def analisar(home, away):
     else:
         nivel = "❌ DESCARTAR"
 
-    dt = parse_data(fixture["fixture"]["date"])
-
-    data_str = dt.strftime("%d/%m") if dt else "-"
-    hora_str = dt.strftime("%H:%M") if dt else "-"
-
     liga = f'{fixture["league"]["name"]} ({fixture["league"]["country"]})'
 
     msg = f"""🔎 ANÁLISE
 
 ⚽ {fixture["teams"]["home"]["name"]} x {fixture["teams"]["away"]["name"]}
 🏆 {liga}
-📅 {data_str}
-⏰ {hora_str}
 
 📊 Probabilidades:
 * Over 1.5: {int(probs["Over 1.5"]*100)}%
@@ -248,7 +255,7 @@ def main():
         try:
             r = requests.get(
                 f"https://api.telegram.org/bot{TOKEN}/getUpdates",
-                params={"offset": last_update_id}
+                params={"offset": last_update_id or 0}
             ).json()
 
             for u in r.get("result", []):
