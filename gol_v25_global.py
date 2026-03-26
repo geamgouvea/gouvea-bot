@@ -10,6 +10,7 @@ import re
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
+
 HEADERS = {"x-apisports-key": API_KEY}
 
 AUTO_INTERVALO = 1800
@@ -30,8 +31,7 @@ def similar(a, b):
 
 def parse_data(data_str):
     try:
-        dt = datetime.fromisoformat(data_str.replace("Z", "+00:00"))
-        return dt.replace(tzinfo=None)
+        return datetime.fromisoformat(data_str.replace("Z", "+00:00")).replace(tzinfo=None)
     except:
         return None
 
@@ -55,7 +55,6 @@ def enviar(msg):
 
 # ================= BUSCAR FIXTURE =================
 def buscar_fixture(home, away):
-
     home_n = normalizar(home)
     away_n = normalizar(away)
 
@@ -84,9 +83,9 @@ def buscar_fixture(home, away):
             )
 
             if home_n.split()[0] in h:
-                score += 0.10
+                score += 0.1
             if away_n.split()[0] in a:
-                score += 0.10
+                score += 0.1
 
             if score > melhor_score:
                 melhor_score = score
@@ -108,20 +107,28 @@ def historico(team_id):
 # ================= ESCOLHA PROFISSIONAL =================
 def escolher_melhor_entrada(probs):
 
-    ordenado = sorted(probs.items(), key=lambda x: x[1], reverse=True)
+    over15 = probs["Over 1.5"]
+    over25 = probs["Over 2.5"]
+    under25 = probs["Under 2.5"]
+    btts = probs["Ambas Marcam"]
 
-    melhor, prob = ordenado[0]
-    segundo, prob2 = ordenado[1]
+    # 🔥 mercados com valor primeiro
+    if over25 >= 0.70:
+        return "Over 2.5", over25
 
-    # força decisão dominante
-    if prob - prob2 >= 0.12:
-        return melhor, prob
+    if btts >= 0.68:
+        return "Ambas Marcam", btts
 
-    # evita over 1.5 fraco
-    if melhor == "Over 1.5" and prob < 0.78:
-        return segundo, prob2
+    if under25 >= 0.78:
+        return "Under 2.5", under25
 
-    return melhor, prob
+    # fallback sem vício
+    if over15 >= 0.80:
+        return "Over 1.5", over15
+
+    # fallback final
+    melhor = max(probs, key=probs.get)
+    return melhor, probs[melhor]
 
 # ================= ANALISE =================
 def analisar(home, away):
@@ -129,7 +136,17 @@ def analisar(home, away):
     fixture = buscar_fixture(home, away)
 
     if not fixture:
-        return fallback(home, away)
+        return {
+            "texto": f"""🔎 ANÁLISE
+
+⚽ {home} x {away}
+
+⚠️ Jogo não encontrado ou sem dados suficientes""",
+            "prob": 0,
+            "entrada": "-",
+            "nivel": "erro",
+            "fixture_id": None
+        }
 
     home_id = fixture["teams"]["home"]["id"]
     away_id = fixture["teams"]["away"]["id"]
@@ -137,7 +154,7 @@ def analisar(home, away):
     jogos = historico(home_id) + historico(away_id)
 
     gols = []
-    btts = 0
+    btts_count = 0
 
     for j in jogos:
         g1 = j["goals"]["home"]
@@ -150,10 +167,20 @@ def analisar(home, away):
         gols.append(total)
 
         if g1 > 0 and g2 > 0:
-            btts += 1
+            btts_count += 1
 
     if len(gols) < 6:
-        return fallback(home, away)
+        return {
+            "texto": f"""🔎 ANÁLISE
+
+⚽ {fixture["teams"]["home"]["name"]} x {fixture["teams"]["away"]["name"]}
+
+⚠️ Poucos dados para análise""",
+            "prob": 0,
+            "entrada": "-",
+            "nivel": "erro",
+            "fixture_id": None
+        }
 
     total = len(gols)
 
@@ -161,12 +188,11 @@ def analisar(home, away):
         "Over 1.5": sum(g >= 2 for g in gols) / total,
         "Over 2.5": sum(g >= 3 for g in gols) / total,
         "Under 2.5": sum(g <= 2 for g in gols) / total,
-        "Ambas Marcam": btts / total
+        "Ambas Marcam": btts_count / total
     }
 
     melhor, prob = escolher_melhor_entrada(probs)
 
-    # filtro profissional
     if prob < 0.65:
         nivel = "❌ DESCARTAR"
     elif prob >= 0.85:
@@ -177,6 +203,7 @@ def analisar(home, away):
         nivel = "⚠️ RISCO"
 
     dt = parse_data(fixture["fixture"]["date"])
+
     if dt:
         dt_local = dt - timedelta(hours=4)
         data_str = dt_local.strftime("%d/%m")
@@ -211,39 +238,18 @@ def analisar(home, away):
         "fixture_id": fixture["fixture"]["id"]
     }
 
-# ================= FALLBACK =================
-def fallback(home, away):
-    return {
-        "texto": f"""🔎 ANÁLISE (Estimativa)
-
-⚽ {home} x {away}
-
-⚠️ Dados insuficientes""",
-        "prob": 0,
-        "entrada": "-",
-        "nivel": "erro",
-        "fixture_id": None
-    }
-
-# ================= MANUAL =================
-def manual(texto):
-    partes = re.split(r"x|vs|versus", texto.lower())
-
-    if len(partes) != 2:
-        return "⚠️ Use: time x time"
-
-    h = partes[0].strip()
-    a = partes[1].strip()
-
-    res = analisar(h, a)
-    return res["texto"]
-
-# ================= MULTIPLA INTELIGENTE =================
+# ================= MULTIPLA =================
 def montar_multipla(candidatos):
 
-    multi = "💰 MÚLTIPLA INTELIGENTE\n\n"
+    multi = "💰 MÚLTIPLA PROFISSIONAL\n\n"
 
-    usados = set()
+    contagem = {
+        "Over 1.5": 0,
+        "Over 2.5": 0,
+        "Under 2.5": 0,
+        "Ambas Marcam": 0
+    }
+
     selecionados = []
 
     for c in candidatos:
@@ -251,11 +257,13 @@ def montar_multipla(candidatos):
         if c["nivel"] in ["⚠️ RISCO", "❌ DESCARTAR"]:
             continue
 
-        if c["entrada"] in usados and len(usados) >= 2:
+        entrada = c["entrada"]
+
+        if contagem[entrada] >= 2:
             continue
 
         selecionados.append(c)
-        usados.add(c["entrada"])
+        contagem[entrada] += 1
 
         if len(selecionados) == 7:
             break
@@ -345,7 +353,7 @@ def main():
                     continue
 
                 texto = u["message"].get("text", "")
-                enviar(manual(texto))
+                enviar(analisar(*re.split(r"x|vs|versus", texto.lower()))["texto"])
 
         except:
             pass
