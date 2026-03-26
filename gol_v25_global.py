@@ -13,8 +13,8 @@ API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
 HEADERS = {"x-apisports-key": API_KEY}
 
 AUTO_INTERVALO = 1800
-JANELA_MIN = -60   # pega jogos até 1h atrás (corrige bug de não achar jogo)
-JANELA_MAX = 1440  # até 24h
+JANELA_MIN = -60
+JANELA_MAX = 1440
 
 enviados_ids = set()
 last_update_id = None
@@ -30,7 +30,9 @@ def similar(a, b):
 
 def parse_data(data_str):
     try:
-        return datetime.fromisoformat(data_str.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
+        return datetime.fromisoformat(
+            data_str.replace("Z", "+00:00")
+        ).astimezone().replace(tzinfo=None)
     except:
         return None
 
@@ -39,8 +41,10 @@ def req(url, params=None):
         r = requests.get(url, headers=HEADERS, params=params, timeout=10)
         if r.status_code == 200:
             return r.json()
+        else:
+            print("ERRO API:", r.status_code)
     except Exception as e:
-        print("ERRO API:", e)
+        print("ERRO REQ:", e)
     return None
 
 def enviar(msg):
@@ -49,10 +53,10 @@ def enviar(msg):
             f"https://api.telegram.org/bot{TOKEN}/sendMessage",
             data={"chat_id": CHAT_ID, "text": msg}
         )
-    except:
-        pass
+    except Exception as e:
+        print("ERRO ENVIO:", e)
 
-# ================= BUSCAR JOGO (CORRIGIDO FORTE) =================
+# ================= BUSCAR JOGO =================
 def buscar_fixture(home, away):
     home_n = normalizar(home)
     away_n = normalizar(away)
@@ -60,10 +64,10 @@ def buscar_fixture(home, away):
     melhor = None
     melhor_score = 0
 
-    for i in range(10):  # reduzido mas eficiente
+    for i in range(30):  # 🔥 aumentado
         data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
-        data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
 
+        data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
         if not data:
             continue
 
@@ -76,12 +80,12 @@ def buscar_fixture(home, away):
             h = normalizar(j["teams"]["home"]["name"])
             a = normalizar(j["teams"]["away"]["name"])
 
-            score1 = (similar(home_n, h) + similar(away_n, a)) / 2
-            score2 = (similar(home_n, a) + similar(away_n, h)) / 2
+            score = max(
+                (similar(home_n, h) + similar(away_n, a)) / 2,
+                (similar(home_n, a) + similar(away_n, h)) / 2
+            )
 
-            score = max(score1, score2)
-
-            # bônus forte para nomes parciais
+            # 🔥 bônus forte
             if home_n in h or h in home_n:
                 score += 0.3
             if away_n in a or a in away_n:
@@ -91,7 +95,7 @@ def buscar_fixture(home, away):
                 melhor_score = score
                 melhor = j
 
-    if melhor_score < 0.35:  # mais permissivo
+    if melhor_score < 0.30:  # 🔥 reduzido
         return None
 
     return melhor
@@ -259,7 +263,6 @@ def auto():
                 data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
 
                 data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
-
                 if not data:
                     continue
 
@@ -288,6 +291,8 @@ def auto():
                         candidatos.append(res)
                         enviados_ids.add(fid)
 
+            print("AUTO encontrou:", len(candidatos))
+
             candidatos.sort(key=lambda x: x["prob"], reverse=True)
 
             for c in candidatos[:5]:
@@ -307,10 +312,10 @@ def auto():
 def manual(texto):
     texto = normalizar(texto)
 
-    if " x " in texto:
-        partes = texto.split(" x ")
-    else:
+    if " x " not in texto:
         return "⚠️ Use: time x time"
+
+    partes = texto.split(" x ")
 
     if len(partes) != 2:
         return "⚠️ Use: time x time"
