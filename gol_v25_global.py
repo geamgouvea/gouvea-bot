@@ -20,10 +20,10 @@ enviados_ids = set()
 last_update_id = None
 
 # ================= UTILS =================
-def normalizar(nome):
-    nome = nome.lower().strip()
-    nome = unicodedata.normalize('NFKD', nome)
-    return nome.encode('ASCII', 'ignore').decode('ASCII')
+def normalizar(texto):
+    texto = texto.lower().strip()
+    texto = unicodedata.normalize('NFKD', texto)
+    return texto.encode('ASCII', 'ignore').decode('ASCII')
 
 def similar(a, b):
     return SequenceMatcher(None, a, b).ratio()
@@ -52,7 +52,7 @@ def enviar(msg):
     except:
         pass
 
-# ================= BUSCAR FIXTURE =================
+# ================= BUSCAR JOGO =================
 def buscar_fixture(home, away):
     home_n = normalizar(home)
     away_n = normalizar(away)
@@ -62,8 +62,8 @@ def buscar_fixture(home, away):
 
     for i in range(15):
         data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
-
         data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
+
         if not data:
             continue
 
@@ -90,7 +90,7 @@ def buscar_fixture(home, away):
                 melhor_score = score
                 melhor = j
 
-    if melhor_score < 0.35:
+    if melhor_score < 0.45:
         return None
 
     return melhor
@@ -103,41 +103,27 @@ def historico(team_id):
     })
     return data.get("response", []) if data else []
 
-# ================= DECISÃO PROFISSIONAL =================
+# ================= DECISÃO AGRESSIVA =================
 def escolher_entrada(probs):
 
-    over15 = probs["Over 1.5"]
-    over25 = probs["Over 2.5"]
-    under25 = probs["Under 2.5"]
-    btts = probs["Ambas Marcam"]
+    if probs["Over 2.5"] >= 0.65:
+        return "Over 2.5", probs["Over 2.5"]
 
-    # 🔥 PRIORIDADE DE VALOR (AGRESSIVO)
+    if probs["Ambas Marcam"] >= 0.62:
+        return "Ambas Marcam", probs["Ambas Marcam"]
 
-    # 1️⃣ Over 2.5 forte
-    if over25 >= 0.65:
-        return "Over 2.5", over25
+    if probs["Under 2.5"] >= 0.78:
+        return "Under 2.5", probs["Under 2.5"]
 
-    # 2️⃣ Ambas marcam forte
-    if btts >= 0.62:
-        return "Ambas Marcam", btts
+    if probs["Over 2.5"] >= 0.55:
+        return "Over 2.5", probs["Over 2.5"]
 
-    # 3️⃣ Under forte (defensivo real)
-    if under25 >= 0.78:
-        return "Under 2.5", under25
+    if probs["Ambas Marcam"] >= 0.55:
+        return "Ambas Marcam", probs["Ambas Marcam"]
 
-    # 4️⃣ Over 2.5 médio (valor > segurança)
-    if over25 >= 0.55:
-        return "Over 2.5", over25
+    if probs["Over 1.5"] >= 0.75:
+        return "Over 1.5", probs["Over 1.5"]
 
-    # 5️⃣ Ambas médio
-    if btts >= 0.55:
-        return "Ambas Marcam", btts
-
-    # 6️⃣ fallback controlado
-    if over15 >= 0.75:
-        return "Over 1.5", over15
-
-    # 7️⃣ último recurso
     melhor = max(probs, key=probs.get)
     return melhor, probs[melhor]
 
@@ -148,7 +134,7 @@ def analisar(home, away):
 
     if not fixture:
         return {
-            "msg": f"⚠️ Não encontrei jogo para: {home} x {away}",
+            "msg": f"❌ Jogo não encontrado\n\n🔍 {home} x {away}",
             "prob": 0,
             "entrada": "-",
             "nivel": "erro",
@@ -161,7 +147,7 @@ def analisar(home, away):
     jogos = historico(home_id) + historico(away_id)
 
     gols = []
-    btts_count = 0
+    btts = 0
 
     for j in jogos:
         g1 = j["goals"]["home"]
@@ -170,20 +156,13 @@ def analisar(home, away):
         if g1 is None or g2 is None:
             continue
 
-        total = g1 + g2
-        gols.append(total)
+        gols.append(g1 + g2)
 
         if g1 > 0 and g2 > 0:
-            btts_count += 1
+            btts += 1
 
     if len(gols) < 5:
-        return {
-            "msg": "⚠️ Dados insuficientes",
-            "prob": 0,
-            "entrada": "-",
-            "nivel": "erro",
-            "fixture_id": None
-        }
+        return {"msg": "⚠️ Dados insuficientes", "prob": 0, "entrada": "-", "nivel": "erro", "fixture_id": None}
 
     total = len(gols)
 
@@ -191,12 +170,11 @@ def analisar(home, away):
         "Over 1.5": sum(g >= 2 for g in gols) / total,
         "Over 2.5": sum(g >= 3 for g in gols) / total,
         "Under 2.5": sum(g <= 2 for g in gols) / total,
-        "Ambas Marcam": btts_count / total
+        "Ambas Marcam": btts / total
     }
 
     melhor, prob = escolher_entrada(probs)
 
-    # 🎯 NÍVEL
     if prob >= 0.80:
         nivel = "🔥 FORTE"
     elif prob >= 0.68:
@@ -208,16 +186,12 @@ def analisar(home, away):
 
     dt = parse_data(fixture["fixture"]["date"])
 
-    if dt:
-        data_str = dt.strftime("%d/%m")
-        hora_str = dt.strftime("%H:%M")
-    else:
-        data_str = "-"
-        hora_str = "-"
+    data_str = dt.strftime("%d/%m") if dt else "-"
+    hora_str = dt.strftime("%H:%M") if dt else "-"
 
     liga = f'{fixture["league"]["name"]} ({fixture["league"]["country"]})'
 
-    texto = f"""🔎 ANÁLISE
+    msg = f"""🔎 ANÁLISE
 
 ⚽ {fixture["teams"]["home"]["name"]} x {fixture["teams"]["away"]["name"]}
 🏆 {liga}
@@ -236,7 +210,7 @@ def analisar(home, away):
 {nivel}"""
 
     return {
-        "msg": texto,
+        "msg": msg,
         "prob": prob,
         "entrada": melhor,
         "nivel": nivel,
@@ -246,20 +220,20 @@ def analisar(home, away):
 # ================= MULTIPLA =================
 def montar_multipla(candidatos):
 
-    candidatos = [c for c in candidatos if c["nivel"] in ["🔥 FORTE", "⚖️ MÉDIA"]]
+    bons = [c for c in candidatos if c["nivel"] in ["🔥 FORTE", "⚖️ MÉDIA"]]
 
-    if len(candidatos) < 7:
+    if len(bons) < 7:
         return None
 
-    candidatos.sort(key=lambda x: x["prob"], reverse=True)
+    bons.sort(key=lambda x: x["prob"], reverse=True)
 
-    selecionados = candidatos[:7]
+    selecionados = bons[:7]
 
-    msg = "💰 MÚLTIPLA AGRESSIVA\n\n"
+    msg = "💰 MÚLTIPLA PROFISSIONAL\n\n"
 
     for c in selecionados:
-        jogo = c["msg"].split("\n")[2]
-        msg += f"{jogo} → {c['entrada']}\n"
+        linha = c["msg"].split("\n")[2]
+        msg += f"{linha} → {c['entrada']}\n"
 
     msg += "\n💵 Entrada sugerida: R$5 a R$10"
 
@@ -276,6 +250,7 @@ def auto():
                 data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
 
                 data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
+
                 if not data:
                     continue
 
@@ -310,6 +285,7 @@ def auto():
                 enviados_ids.add(c["fixture_id"])
 
             multi = montar_multipla(candidatos)
+
             if multi:
                 enviar(multi)
 
@@ -321,16 +297,21 @@ def auto():
 # ================= MANUAL =================
 def manual(texto):
     try:
-        partes = re.split(r"x|vs|versus", texto.lower())
+        texto = normalizar(texto)
+
+        if " x " in texto:
+            partes = texto.split(" x ")
+        elif " vs " in texto:
+            partes = texto.split(" vs ")
+        elif " versus " in texto:
+            partes = texto.split(" versus ")
+        else:
+            return "⚠️ Use: time x time"
 
         if len(partes) != 2:
             return "⚠️ Use: time x time"
 
-        h = partes[0].strip()
-        a = partes[1].strip()
-
-        res = analisar(h, a)
-        return res["msg"]
+        return "🧠 MANUAL\n\n" + analisar(partes[0], partes[1])["msg"]
 
     except:
         return "⚠️ Erro no comando"
@@ -339,7 +320,7 @@ def manual(texto):
 def main():
     global last_update_id
 
-    enviar("🤖 BOT AGRESSIVO ONLINE")
+    enviar("🤖 BOT PROFISSIONAL ONLINE")
 
     while True:
         try:
