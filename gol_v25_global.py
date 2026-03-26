@@ -46,73 +46,59 @@ def enviar(msg):
     except:
         pass
 
-# ================= BUSCAR TIME =================
-def buscar_time_id(nome):
-    data = req("https://v3.football.api-sports.io/teams", {"search": nome})
-    if not data or not data.get("response"):
-        return None
-    return data["response"][0]["team"]["id"]
-
-# ================= BUSCAR JOGO (HÍBRIDO) =================
+# ================= BUSCAR JOGO =================
 def buscar_fixture(home, away):
-
     home_n = normalizar(home)
     away_n = normalizar(away)
 
-    home_id = buscar_time_id(home)
-    away_id = buscar_time_id(away)
+    palavras_home = home_n.split()
+    palavras_away = away_n.split()
 
-    # ================= MÉTODO 1 (POR TIME) =================
-    if home_id:
-        data = req("https://v3.football.api-sports.io/fixtures", {
-            "team": home_id,
-            "next": 20
-        })
-
-        if data:
-            for j in data.get("response", []):
-                h = normalizar(j["teams"]["home"]["name"])
-                a = normalizar(j["teams"]["away"]["name"])
-
-                if (home_n in h and away_n in a) or (home_n in a and away_n in h):
-                    return j
-
-    # ================= MÉTODO 2 (POR DATA - FALLBACK) =================
     melhor = None
     melhor_score = 0
 
     for i in range(30):
         data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
 
-        data = req("https://v3.football.api-sports.io/fixtures", {
-            "date": data_busca
-        })
+        data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
 
         if not data:
             continue
 
         for j in data.get("response", []):
+
+            status = j["fixture"]["status"]["short"]
+            if status in ["FT", "CANC"]:
+                continue
+
             h = normalizar(j["teams"]["home"]["name"])
             a = normalizar(j["teams"]["away"]["name"])
 
-            score = max(
-                (similar(home_n, h) + similar(away_n, a)) / 2,
-                (similar(home_n, a) + similar(away_n, h)) / 2
-            )
+            score1 = (similar(home_n, h) + similar(away_n, a)) / 2
+            score2 = (similar(home_n, a) + similar(away_n, h)) / 2
+            score = max(score1, score2)
 
-            if home_n.split()[0] in h:
+            for p in palavras_home:
+                if p in h or p in a:
+                    score += 0.15
+
+            for p in palavras_away:
+                if p in h or p in a:
+                    score += 0.15
+
+            if palavras_home and palavras_home[0] in h:
                 score += 0.2
-            if away_n.split()[0] in a:
+            if palavras_away and palavras_away[0] in a:
                 score += 0.2
 
             if score > melhor_score:
                 melhor_score = score
                 melhor = j
 
-    if melhor_score >= 0.35:
-        return melhor
+    if melhor_score < 0.30:
+        return None
 
-    return None
+    return melhor
 
 # ================= HISTÓRICO =================
 def historico(team_id):
@@ -229,6 +215,97 @@ def analisar(home, away):
         "fixture_id": fixture["fixture"]["id"]
     }
 
+# ================= MULTIPLA =================
+def montar_multipla(candidatos):
+
+    bons = [c for c in candidatos if c["nivel"] in ["🔥 FORTE", "⚖️ MÉDIA"]]
+
+    if len(bons) < 5:
+        return None
+
+    bons.sort(key=lambda x: x["prob"], reverse=True)
+
+    selecionados = bons[:5]
+
+    msg = "💰 MÚLTIPLA PROFISSIONAL\n\n"
+
+    for c in selecionados:
+        linha = c["msg"].split("\n")[2]
+        msg += f"{linha} → {c['entrada']}\n"
+
+    msg += "\n💵 Entrada sugerida: R$5 a R$10"
+
+    return msg
+
+# ================= AUTO =================
+def auto():
+    while True:
+        try:
+            agora = datetime.now()
+            candidatos = []
+
+            for i in range(2):
+                data_busca = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
+
+                data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
+
+                if not data:
+                    continue
+
+                for j in data.get("response", []):
+
+                    fid = j["fixture"]["id"]
+
+                    if fid in enviados_ids:
+                        continue
+
+                    dt = j["fixture"]["date"]
+                    dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+
+                    diff = (dt - agora).total_seconds() / 60
+
+                    if diff < JANELA_MIN or diff > JANELA_MAX:
+                        continue
+
+                    res = analisar(
+                        j["teams"]["home"]["name"],
+                        j["teams"]["away"]["name"]
+                    )
+
+                    if res["prob"] > 0:
+                        candidatos.append(res)
+                        enviados_ids.add(fid)
+
+            candidatos.sort(key=lambda x: x["prob"], reverse=True)
+
+            for c in candidatos[:5]:
+                enviar("🤖 AUTO\n\n" + c["msg"])
+
+            multi = montar_multipla(candidatos)
+
+            if multi:
+                enviar(multi)
+
+        except Exception as e:
+            enviar(f"❌ ERRO AUTO: {e}")
+
+        time.sleep(AUTO_INTERVALO)
+
+# ================= MANUAL =================
+def manual(texto):
+    try:
+        texto = normalizar(texto)
+
+        if " x " not in texto:
+            return "⚠️ Use: time x time"
+
+        home, away = texto.split(" x ")
+
+        return "🧠 MANUAL\n\n" + analisar(home, away)["msg"]
+
+    except:
+        return "⚠️ Erro no comando"
+
 # ================= MAIN =================
 def main():
     global last_update_id
@@ -249,7 +326,7 @@ def main():
                     continue
 
                 texto = u["message"].get("text", "")
-                enviar("🧠 MANUAL\n\n" + analisar(*texto.split(" x "))["msg"])
+                enviar(manual(texto))
 
         except:
             pass
@@ -258,4 +335,5 @@ def main():
 
 # ================= START =================
 if __name__ == "__main__":
+    threading.Thread(target=auto).start()
     main()
