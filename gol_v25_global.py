@@ -10,6 +10,7 @@ import re
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
+
 HEADERS = {"x-apisports-key": API_KEY}
 
 AUTO_INTERVALO = 1800
@@ -48,14 +49,14 @@ def enviar(msg):
     except:
         pass
 
-# ================= PARSE DATA (CORRIGIDO) =================
+# ================= DATA =================
 def parse_data(data_str):
     try:
         return datetime.fromisoformat(data_str.replace("Z", "+00:00"))
     except:
         return None
 
-# ================= BUSCAR FIXTURE PRO =================
+# ================= BUSCAR FIXTURE =================
 def buscar_fixture(home, away):
     home_n = normalizar(home)
     away_n = normalizar(away)
@@ -63,7 +64,7 @@ def buscar_fixture(home, away):
     melhor = None
     melhor_score = 0
 
-    for i in range(10):
+    for i in range(15):  # 🔥 busca até 15 dias
         data_busca = (datetime.now(timezone.utc) + timedelta(days=i)).strftime("%Y-%m-%d")
 
         data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
@@ -73,17 +74,21 @@ def buscar_fixture(home, away):
         for j in data.get("response", []):
 
             liga = j["league"]["name"].lower()
+            pais = j["league"]["country"].lower()
 
-            # 🚫 BLOQUEIOS
-            if "women" in liga or "femin" in liga:
+            # 🚫 bloquear lixo
+            if any(x in liga for x in ["friendlies", "u20", "u17", "youth"]):
+                continue
+
+            if pais not in ["brazil", "england", "spain", "italy", "germany", "argentina"]:
                 continue
 
             h = normalizar(j["teams"]["home"]["name"])
             a = normalizar(j["teams"]["away"]["name"])
 
-            # match direto
-            score1 = min(similar(home_n, h), similar(away_n, a))
-            score2 = min(similar(home_n, a), similar(away_n, h))
+            # 🔥 match inteligente
+            score1 = (similar(home_n, h) + similar(away_n, a)) / 2
+            score2 = (similar(home_n, a) + similar(away_n, h)) / 2
 
             final = max(score1, score2)
 
@@ -97,7 +102,7 @@ def buscar_fixture(home, away):
                 melhor_score = final
                 melhor = j
 
-    if melhor_score < 0.65:
+    if melhor_score < 0.55:
         return None
 
     return melhor
@@ -238,6 +243,15 @@ def auto():
                     continue
 
                 for j in data.get("response", []):
+
+                    liga = j["league"]["name"].lower()
+                    pais = j["league"]["country"].lower()
+
+                    if any(x in liga for x in ["friendlies", "u20", "u17", "youth"]):
+                        continue
+
+                    if pais not in ["brazil", "england", "spain", "italy", "germany", "argentina"]:
+                        continue
 
                     fid = j["fixture"]["id"]
                     if fid in enviados_ids:
