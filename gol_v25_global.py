@@ -14,22 +14,27 @@ API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
 HEADERS = {"x-apisports-key": API_KEY}
 
 AUTO_INTERVALO = 1800
-JANELA_MIN = 10
+JANELA_MIN = 5
 JANELA_MAX = 720
 
 enviados_ids = set()
 last_update_id = None
 
-# ================= NORMALIZAR =================
-def normalizar(nome):
-    nome = nome.lower().strip()
-    nome = unicodedata.normalize('NFKD', nome)
-    return nome.encode('ASCII', 'ignore').decode('ASCII')
+# ================= UTILS =================
+def normalizar(texto):
+    texto = texto.lower().strip()
+    texto = unicodedata.normalize('NFKD', texto)
+    return texto.encode('ASCII', 'ignore').decode('ASCII')
 
 def similar(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
-# ================= REQUEST =================
+def parse_data(data_str):
+    try:
+        return datetime.fromisoformat(data_str.replace("Z", "+00:00"))
+    except:
+        return None
+
 def req(url, params=None):
     try:
         r = requests.get(url, headers=HEADERS, params=params, timeout=10)
@@ -39,7 +44,6 @@ def req(url, params=None):
         pass
     return None
 
-# ================= TELEGRAM =================
 def enviar(msg):
     try:
         requests.post(
@@ -49,14 +53,7 @@ def enviar(msg):
     except:
         pass
 
-# ================= DATA =================
-def parse_data(data_str):
-    try:
-        return datetime.fromisoformat(data_str.replace("Z", "+00:00"))
-    except:
-        return None
-
-# ================= BUSCAR FIXTURE =================
+# ================= BUSCAR JOGO (VERSÃO FUNCIONAL) =================
 def buscar_fixture(home, away):
     home_n = normalizar(home)
     away_n = normalizar(away)
@@ -64,7 +61,7 @@ def buscar_fixture(home, away):
     melhor = None
     melhor_score = 0
 
-    for i in range(15):  # 🔥 busca até 15 dias
+    for i in range(20):  # 🔥 MAIS DIAS (resolve seu problema)
         data_busca = (datetime.now(timezone.utc) + timedelta(days=i)).strftime("%Y-%m-%d")
 
         data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
@@ -73,36 +70,25 @@ def buscar_fixture(home, away):
 
         for j in data.get("response", []):
 
-            liga = j["league"]["name"].lower()
-            pais = j["league"]["country"].lower()
-
-            # 🚫 bloquear lixo
-            if any(x in liga for x in ["friendlies", "u20", "u17", "youth"]):
-                continue
-
-            if pais not in ["brazil", "england", "spain", "italy", "germany", "argentina"]:
-                continue
-
             h = normalizar(j["teams"]["home"]["name"])
             a = normalizar(j["teams"]["away"]["name"])
 
-            # 🔥 match inteligente
             score1 = (similar(home_n, h) + similar(away_n, a)) / 2
             score2 = (similar(home_n, a) + similar(away_n, h)) / 2
 
             final = max(score1, score2)
 
-            # bônus leve
+            # 🔥 bônus forte (resolve "Bayern", "Inter", etc)
             if home_n.split()[0] in h:
-                final += 0.05
+                final += 0.15
             if away_n.split()[0] in a:
-                final += 0.05
+                final += 0.15
 
             if final > melhor_score:
                 melhor_score = final
                 melhor = j
 
-    if melhor_score < 0.55:
+    if melhor_score < 0.40:  # 🔥 MUITO MAIS FLEXÍVEL
         return None
 
     return melhor
@@ -115,29 +101,33 @@ def historico(team_id):
     })
     return data.get("response", []) if data else []
 
-# ================= MERCADO =================
-def escolher_mercado(media, probs):
-    if media >= 3 and probs["Over 2.5"] >= 0.70:
+# ================= DECISÃO =================
+def escolher_entrada(probs):
+
+    if probs["Over 2.5"] >= 0.65:
         return "Over 2.5", probs["Over 2.5"]
 
-    if probs["Ambas Marcam"] >= 0.72:
+    if probs["Ambas Marcam"] >= 0.60:
         return "Ambas Marcam", probs["Ambas Marcam"]
 
-    if media <= 2.2 and probs["Under 2.5"] >= 0.70:
+    if probs["Under 2.5"] >= 0.70:
         return "Under 2.5", probs["Under 2.5"]
 
-    if probs["Over 1.5"] >= 0.75:
+    if probs["Over 1.5"] >= 0.70:
         return "Over 1.5", probs["Over 1.5"]
 
     melhor = max(probs, key=probs.get)
     return melhor, probs[melhor]
 
-# ================= ANALISAR =================
+# ================= ANALISE =================
 def analisar(home, away):
 
     fixture = buscar_fixture(home, away)
+
     if not fixture:
-        return None
+        return f"""❌ Não foi possível analisar
+
+🔍 {home} x {away}"""
 
     home_id = fixture["teams"]["home"]["id"]
     away_id = fixture["teams"]["away"]["id"]
@@ -154,17 +144,17 @@ def analisar(home, away):
         if g1 is None or g2 is None:
             continue
 
-        total = g1 + g2
-        gols.append(total)
+        gols.append(g1 + g2)
 
         if g1 > 0 and g2 > 0:
             btts += 1
 
-    if len(gols) < 6:
-        return None
+    if len(gols) < 5:
+        return f"""❌ Dados insuficientes
+
+🔍 {home} x {away}"""
 
     total = len(gols)
-    media = sum(gols) / total
 
     probs = {
         "Over 1.5": sum(g >= 2 for g in gols) / total,
@@ -173,39 +163,31 @@ def analisar(home, away):
         "Ambas Marcam": btts / total
     }
 
-    melhor, prob = escolher_mercado(media, probs)
+    melhor, prob = escolher_entrada(probs)
 
     dt = parse_data(fixture["fixture"]["date"])
-    if not dt:
-        return None
 
-    dt_local = dt - timedelta(hours=4)
-
-    if prob >= 0.80:
-        nivel = "🔥 FORTE"
-    elif prob >= 0.70:
-        nivel = "⚖️ MÉDIA"
-    else:
-        nivel = "⚠️ RISCO"
+    data_str = dt.strftime("%d/%m") if dt else "-"
+    hora_str = dt.strftime("%H:%M") if dt else "-"
 
     liga = f'{fixture["league"]["name"]} ({fixture["league"]["country"]})'
 
-    return {
-        "msg": f"""🔎 ANÁLISE
+    return f"""🔎 ANÁLISE
 
 ⚽ {fixture["teams"]["home"]["name"]} x {fixture["teams"]["away"]["name"]}
 🏆 {liga}
-📅 {dt_local.strftime("%d/%m")}
-⏰ {dt_local.strftime("%H:%M")}
+📅 {data_str}
+⏰ {hora_str}
 
-🎯 {melhor}
-📊 {int(prob*100)}%
-📈 Média gols: {round(media,2)}
+📊 Probabilidades:
+* Over 1.5: {int(probs["Over 1.5"]*100)}%
+* Over 2.5: {int(probs["Over 2.5"]*100)}%
+* Under 2.5: {int(probs["Under 2.5"]*100)}%
+* Ambas: {int(probs["Ambas Marcam"]*100)}%
 
-{nivel}""",
-        "prob": prob,
-        "fixture_id": fixture["fixture"]["id"]
-    }
+🎯 Melhor entrada: {melhor}
+📈 {int(prob*100)}%
+"""
 
 # ================= MANUAL =================
 def manual(texto):
@@ -215,28 +197,19 @@ def manual(texto):
         if len(partes) != 2:
             return "⚠️ Use: time x time"
 
-        h = partes[0].strip()
-        a = partes[1].strip()
-
-        res = analisar(h, a)
-
-        if not res:
-            return "❌ Não foi possível analisar o jogo"
-
-        return "🧠 MANUAL\n\n" + res["msg"]
+        return "🧠 MANUAL\n\n" + analisar(partes[0].strip(), partes[1].strip())
 
     except:
-        return "⚠️ Use: time x time"
+        return "⚠️ Erro no comando"
 
 # ================= AUTO =================
 def auto():
     while True:
         try:
             agora = datetime.now(timezone.utc)
-            candidatos = []
 
             for i in range(2):
-                data_busca = (datetime.now(timezone.utc) + timedelta(days=i)).strftime("%Y-%m-%d")
+                data_busca = (agora + timedelta(days=i)).strftime("%Y-%m-%d")
 
                 data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
                 if not data:
@@ -244,16 +217,8 @@ def auto():
 
                 for j in data.get("response", []):
 
-                    liga = j["league"]["name"].lower()
-                    pais = j["league"]["country"].lower()
-
-                    if any(x in liga for x in ["friendlies", "u20", "u17", "youth"]):
-                        continue
-
-                    if pais not in ["brazil", "england", "spain", "italy", "germany", "argentina"]:
-                        continue
-
                     fid = j["fixture"]["id"]
+
                     if fid in enviados_ids:
                         continue
 
@@ -266,22 +231,14 @@ def auto():
                     if diff < JANELA_MIN or diff > JANELA_MAX:
                         continue
 
-                    res = analisar(
+                    msg = analisar(
                         j["teams"]["home"]["name"],
                         j["teams"]["away"]["name"]
                     )
 
-                    if not res:
-                        continue
-
-                    if res["prob"] >= 0.70:
-                        candidatos.append(res)
-
-            candidatos.sort(key=lambda x: x["prob"], reverse=True)
-
-            for c in candidatos[:5]:
-                enviar("🤖 AUTO\n\n🔥 SINAL\n\n" + c["msg"])
-                enviados_ids.add(c["fixture_id"])
+                    if "❌" not in msg:
+                        enviar("🤖 AUTO\n\n" + msg)
+                        enviados_ids.add(fid)
 
         except Exception as e:
             enviar(f"❌ ERRO AUTO: {e}")
@@ -292,7 +249,7 @@ def auto():
 def main():
     global last_update_id
 
-    enviar("🤖 BOT ONLINE PRO")
+    enviar("🤖 BOT ONLINE")
 
     while True:
         try:
@@ -313,7 +270,7 @@ def main():
         except:
             pass
 
-        time.sleep(3)
+        time.sleep(2)
 
 # ================= START =================
 if __name__ == "__main__":
