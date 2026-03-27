@@ -12,6 +12,7 @@ print("🚀 BOT INICIANDO...")
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
+
 HEADERS = {"x-apisports-key": API_KEY}
 
 AUTO_INTERVALO = 1800
@@ -21,7 +22,7 @@ JANELA_MAX = 720
 enviados_ids = set()
 last_update_id = None
 
-# ================= NORMALIZAÇÃO =================
+# ================= NORMALIZAR =================
 def normalizar(texto):
     texto = texto.lower().strip()
     texto = unicodedata.normalize('NFKD', texto)
@@ -37,9 +38,9 @@ def req(url, params=None):
         if r.status_code == 200:
             return r.json()
         else:
-            print("❌ API ERRO:", r.status_code, r.text)
+            print("❌ API:", r.status_code, r.text)
     except Exception as e:
-        print("❌ REQUEST ERRO:", e)
+        print("❌ REQUEST:", e)
     return None
 
 # ================= TELEGRAM =================
@@ -50,7 +51,7 @@ def enviar(msg):
             data={"chat_id": CHAT_ID, "text": msg}
         )
     except Exception as e:
-        print("❌ TELEGRAM ERRO:", e)
+        print("❌ TELEGRAM:", e)
 
 # ================= BUSCAR TIME =================
 def buscar_time(nome):
@@ -67,20 +68,19 @@ def buscar_time(nome):
         nome_api = normalizar(t["team"]["name"])
         score = similar(nome_n, nome_api)
 
-        # 🔥 evita feminino
-        if "women" in nome_api or "w" in nome_api:
-            continue
+        # 🔥 REMOVIDO filtro errado de "w"
 
         if score > melhor_score:
             melhor_score = score
             melhor_id = t["team"]["id"]
 
-    if melhor_score < 0.55:
+    # 🔥 MAIS FLEXÍVEL
+    if melhor_score < 0.40:
         return None
 
     return melhor_id
 
-# ================= BUSCAR JOGO =================
+# ================= BUSCAR FIXTURE =================
 def buscar_fixture(home, away):
     home_id = buscar_time(home)
     away_id = buscar_time(away)
@@ -89,7 +89,8 @@ def buscar_fixture(home, away):
         print("❌ TIME NÃO ENCONTRADO")
         return None
 
-    for i in range(10):
+    # 🔥 AUMENTADO PARA 30 DIAS
+    for i in range(30):
         data_str = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
 
         data = req("https://v3.football.api-sports.io/fixtures", {
@@ -197,7 +198,7 @@ def manual(texto):
         return "🧠 MANUAL\n\n" + res
 
     except Exception as e:
-        print("❌ ERRO MANUAL:", e)
+        print("❌ MANUAL:", e)
         return "⚠️ Erro"
 
 # ================= AUTO =================
@@ -236,7 +237,7 @@ def auto():
                         enviados_ids.add(fid)
 
         except Exception as e:
-            print("❌ ERRO AUTO:", e)
+            print("❌ AUTO:", e)
 
         time.sleep(AUTO_INTERVALO)
 
@@ -261,7 +262,7 @@ def main():
                     enviar(manual(texto))
 
         except Exception as e:
-            print("❌ ERRO MAIN:", e)
+            print("❌ MAIN:", e)
 
         time.sleep(3)
 
