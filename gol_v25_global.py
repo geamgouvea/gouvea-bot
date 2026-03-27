@@ -53,44 +53,15 @@ def enviar(msg):
     except Exception as e:
         print("❌ TELEGRAM:", e)
 
-# ================= BUSCAR TIME =================
-def buscar_time(nome):
-    nome_n = normalizar(nome)
+# ================= BUSCAR FIXTURE (CORRETO) =================
+def buscar_fixture(home, away):
+    home_n = normalizar(home)
+    away_n = normalizar(away)
 
-    data = req("https://v3.football.api-sports.io/teams", {"search": nome})
-    if not data:
-        return None
-
-    melhor_id = None
+    melhor_jogo = None
     melhor_score = 0
 
-    for t in data.get("response", []):
-        nome_api = normalizar(t["team"]["name"])
-        score = similar(nome_n, nome_api)
-
-        # 🔥 REMOVIDO filtro errado de "w"
-
-        if score > melhor_score:
-            melhor_score = score
-            melhor_id = t["team"]["id"]
-
-    # 🔥 MAIS FLEXÍVEL
-    if melhor_score < 0.40:
-        return None
-
-    return melhor_id
-
-# ================= BUSCAR FIXTURE =================
-def buscar_fixture(home, away):
-    home_id = buscar_time(home)
-    away_id = buscar_time(away)
-
-    if not home_id or not away_id:
-        print("❌ TIME NÃO ENCONTRADO")
-        return None
-
-    # 🔥 AUMENTADO PARA 30 DIAS
-    for i in range(30):
+    for i in range(30):  # 🔥 busca 30 dias
         data_str = (datetime.utcnow() + timedelta(days=i)).strftime("%Y-%m-%d")
 
         data = req("https://v3.football.api-sports.io/fixtures", {
@@ -100,14 +71,28 @@ def buscar_fixture(home, away):
         if not data:
             continue
 
-        for jogo in data.get("response", []):
-            h = jogo["teams"]["home"]["id"]
-            a = jogo["teams"]["away"]["id"]
+        for j in data.get("response", []):
+            h = normalizar(j["teams"]["home"]["name"])
+            a = normalizar(j["teams"]["away"]["name"])
 
-            if (h == home_id and a == away_id) or (h == away_id and a == home_id):
-                return jogo
+            score1 = (similar(home_n, h) + similar(away_n, a)) / 2
+            score2 = (similar(home_n, a) + similar(away_n, h)) / 2
 
-    return None
+            final = max(score1, score2)
+
+            # 🔥 bônus por palavra-chave
+            if home_n.split()[0] in h or away_n.split()[0] in a:
+                final += 0.15
+
+            if final > melhor_score:
+                melhor_score = final
+                melhor_jogo = j
+
+    if melhor_score < 0.45:
+        print("❌ SCORE BAIXO:", melhor_score)
+        return None
+
+    return melhor_jogo
 
 # ================= HISTÓRICO =================
 def historico(team_id):
@@ -166,6 +151,13 @@ def analisar(home, away):
     dt = datetime.strptime(fixture["fixture"]["date"][:19], "%Y-%m-%dT%H:%M:%S")
     dt_local = dt - timedelta(hours=4)
 
+    if prob >= 0.80:
+        nivel = "🔥 FORTE"
+    elif prob >= 0.70:
+        nivel = "⚖️ MÉDIA"
+    else:
+        nivel = "⚠️ RISCO"
+
     liga = f'{fixture["league"]["name"]} ({fixture["league"]["country"]})'
 
     return f"""🔎 ANÁLISE
@@ -177,7 +169,9 @@ def analisar(home, away):
 
 🎯 {melhor}
 📊 {int(prob*100)}%
-📈 Média gols: {round(media,2)}"""
+📈 Média gols: {round(media,2)}
+
+{nivel}"""
 
 # ================= MANUAL =================
 def manual(texto):
@@ -209,24 +203,29 @@ def auto():
         try:
             agora = datetime.utcnow()
 
-            data = req("https://v3.football.api-sports.io/fixtures", {
-                "date": agora.strftime("%Y-%m-%d")
-            })
+            for i in range(2):
+                data_str = (agora + timedelta(days=i)).strftime("%Y-%m-%d")
 
-            if not data:
-                continue
+                data = req("https://v3.football.api-sports.io/fixtures", {
+                    "date": data_str
+                })
 
-            for j in data.get("response", []):
-                fid = j["fixture"]["id"]
-
-                if fid in enviados_ids:
+                if not data:
                     continue
 
-                dt = datetime.strptime(j["fixture"]["date"][:19], "%Y-%m-%dT%H:%M:%S")
+                for j in data.get("response", []):
+                    fid = j["fixture"]["id"]
 
-                diff = (dt - agora).total_seconds() / 60
+                    if fid in enviados_ids:
+                        continue
 
-                if JANELA_MIN < diff < JANELA_MAX:
+                    dt = datetime.strptime(j["fixture"]["date"][:19], "%Y-%m-%dT%H:%M:%S")
+
+                    diff = (dt - agora).total_seconds() / 60
+
+                    if diff < JANELA_MIN or diff > JANELA_MAX:
+                        continue
+
                     res = analisar(
                         j["teams"]["home"]["name"],
                         j["teams"]["away"]["name"]
