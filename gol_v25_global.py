@@ -10,7 +10,6 @@ import re
 TOKEN = "8650319652:AAFvJ8kJoMIoxFEq2XYVzF4P9KBpMPZ17ZA"
 CHAT_ID = "2124226862"
 API_KEY = "565ed1c1b1e85fefe0a5fa2995db9bd5"
-
 HEADERS = {"x-apisports-key": API_KEY}
 
 AUTO_INTERVALO = 1800
@@ -19,13 +18,6 @@ JANELA_MAX = 720
 
 enviados_ids = set()
 last_update_id = None
-
-# ================= DATA (CORRIGIDO) =================
-def parse_data(data_str):
-    try:
-        return datetime.fromisoformat(data_str.replace("Z", "+00:00"))
-    except:
-        return None
 
 # ================= NORMALIZAR =================
 def normalizar(nome):
@@ -56,7 +48,14 @@ def enviar(msg):
     except:
         pass
 
-# ================= BUSCAR FIXTURE (MELHORADO) =================
+# ================= PARSE DATA (CORRIGIDO) =================
+def parse_data(data_str):
+    try:
+        return datetime.fromisoformat(data_str.replace("Z", "+00:00"))
+    except:
+        return None
+
+# ================= BUSCAR FIXTURE PRO =================
 def buscar_fixture(home, away):
     home_n = normalizar(home)
     away_n = normalizar(away)
@@ -64,7 +63,7 @@ def buscar_fixture(home, away):
     melhor = None
     melhor_score = 0
 
-    for i in range(10):  # 🔥 10 dias agora
+    for i in range(10):
         data_busca = (datetime.now(timezone.utc) + timedelta(days=i)).strftime("%Y-%m-%d")
 
         data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
@@ -72,25 +71,33 @@ def buscar_fixture(home, away):
             continue
 
         for j in data.get("response", []):
+
+            liga = j["league"]["name"].lower()
+
+            # 🚫 BLOQUEIOS
+            if "women" in liga or "femin" in liga:
+                continue
+
             h = normalizar(j["teams"]["home"]["name"])
             a = normalizar(j["teams"]["away"]["name"])
 
-            score1 = (similar(home_n, h) + similar(away_n, a)) / 2
-            score2 = (similar(home_n, a) + similar(away_n, h)) / 2
+            # match direto
+            score1 = min(similar(home_n, h), similar(away_n, a))
+            score2 = min(similar(home_n, a), similar(away_n, h))
 
             final = max(score1, score2)
 
-            # 🔥 bônus inteligente
+            # bônus leve
             if home_n.split()[0] in h:
-                final += 0.1
+                final += 0.05
             if away_n.split()[0] in a:
-                final += 0.1
+                final += 0.05
 
             if final > melhor_score:
                 melhor_score = final
                 melhor = j
 
-    if melhor_score < 0.55:  # 🔥 mais flexível
+    if melhor_score < 0.65:
         return None
 
     return melhor
@@ -105,23 +112,22 @@ def historico(team_id):
 
 # ================= MERCADO =================
 def escolher_mercado(media, probs):
-
-    if media >= 3 and probs["Over 2.5"] >= 0.65:
+    if media >= 3 and probs["Over 2.5"] >= 0.70:
         return "Over 2.5", probs["Over 2.5"]
 
-    if probs["Ambas Marcam"] >= 0.68:
+    if probs["Ambas Marcam"] >= 0.72:
         return "Ambas Marcam", probs["Ambas Marcam"]
 
-    if media <= 2.1 and probs["Under 2.5"] >= 0.65:
+    if media <= 2.2 and probs["Under 2.5"] >= 0.70:
         return "Under 2.5", probs["Under 2.5"]
 
-    if probs["Over 1.5"] >= 0.72:
+    if probs["Over 1.5"] >= 0.75:
         return "Over 1.5", probs["Over 1.5"]
 
     melhor = max(probs, key=probs.get)
     return melhor, probs[melhor]
 
-# ================= ANALISE =================
+# ================= ANALISAR =================
 def analisar(home, away):
 
     fixture = buscar_fixture(home, away)
@@ -168,7 +174,7 @@ def analisar(home, away):
     if not dt:
         return None
 
-    dt_local = dt.astimezone(timezone(timedelta(hours=-4)))
+    dt_local = dt - timedelta(hours=4)
 
     if prob >= 0.80:
         nivel = "🔥 FORTE"
@@ -217,7 +223,7 @@ def manual(texto):
     except:
         return "⚠️ Use: time x time"
 
-# ================= AUTO (CORRIGIDO) =================
+# ================= AUTO =================
 def auto():
     while True:
         try:
@@ -225,7 +231,7 @@ def auto():
             candidatos = []
 
             for i in range(2):
-                data_busca = (agora + timedelta(days=i)).strftime("%Y-%m-%d")
+                data_busca = (datetime.now(timezone.utc) + timedelta(days=i)).strftime("%Y-%m-%d")
 
                 data = req("https://v3.football.api-sports.io/fixtures", {"date": data_busca})
                 if not data:
@@ -234,7 +240,6 @@ def auto():
                 for j in data.get("response", []):
 
                     fid = j["fixture"]["id"]
-
                     if fid in enviados_ids:
                         continue
 
@@ -273,7 +278,7 @@ def auto():
 def main():
     global last_update_id
 
-    enviar("🤖 BOT ONLINE")
+    enviar("🤖 BOT ONLINE PRO")
 
     while True:
         try:
